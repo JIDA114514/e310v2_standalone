@@ -448,6 +448,54 @@ AD9361_InitParam default_init_param = {
 		.platform_ops = GPIO_OPS,
 		.extra = GPIO_PARAM
 	},		//gpio_cal_sw2 *** cal-sw2-gpios
+	{
+		.number = -1,
+		.platform_ops = GPIO_OPS,
+		.extra = GPIO_PARAM
+	},		//gpio_rx1_ctrl_h *** gpio_rx1_ctrl_h
+
+	{
+		.number = -1,
+		.platform_ops = GPIO_OPS,
+		.extra = GPIO_PARAM
+	},		//gpio_rx1_ctrl_l *** gpio_rx1_ctrl_l
+
+	{
+		.number = -1,
+		.platform_ops = GPIO_OPS,
+		.extra = GPIO_PARAM
+	},		//gpio_tx1_ctrl_h *** gpio_tx1_ctrl_h
+
+	{
+		.number = -1,
+		.platform_ops = GPIO_OPS,
+		.extra = GPIO_PARAM
+	},		//gpio_tx1_ctrl_l *** gpio_tx1_ctrl_l
+
+	{
+		.number = -1,
+		.platform_ops = GPIO_OPS,
+		.extra = GPIO_PARAM
+	},		//gpio_rx2_ctrl_h *** gpio_rx2_ctrl_h
+
+	{
+		.number = -1,
+		.platform_ops = GPIO_OPS,
+		.extra = GPIO_PARAM
+
+	},		//gpio_rx2_ctrl_l *** gpio_rx2_ctrl_l
+
+	{
+		.number = -1,
+		.platform_ops = GPIO_OPS,
+		.extra = GPIO_PARAM
+	},		//gpio_tx2_ctrl_h *** gpio_tx2_ctrl_h
+
+	{
+		.number = -1,
+		.platform_ops = GPIO_OPS,
+		.extra = GPIO_PARAM
+	},		//gpio_tx2_ctrl_l *** gpio_tx2_ctrl_l
 
 	{
 		.device_id = SPI_DEVICE_ID,
@@ -526,6 +574,55 @@ struct ad9361_rf_phy *ad9361_phy_b;
 #endif
 
 
+//capture IQ signal
+//#define CAPTURE_WORDS   4096U
+//__attribute__((aligned(64)))
+//static uint32_t rx_buf[CAPTURE_WORDS];
+//
+///* 常见打包：低16位=I，高16位=Q（如反了交换即可） */
+//static void print_iq_csv(uint32_t *buf, uint32_t nwords)
+//{
+//	for (uint32_t n = 0; n < nwords; n++) {
+//		int16_t i = (int16_t)(buf[n] & 0xFFFF);
+//		int16_t q = (int16_t)((buf[n] >> 16) & 0xFFFF);
+//		printf("%lu,%d,%d\n", (unsigned long)n, i, q);
+//	}
+//}
+
+//int capture_and_print_rx_iq(struct axi_dmac *rx_dmac)
+//{
+//	int ret;
+//	struct axi_dma_transfer tr;
+//
+//	/* 清空buffer（可选） */
+//	for (uint32_t i = 0; i < CAPTURE_WORDS; i++)
+//		rx_buf[i] = 0;
+//
+//	/* 启动 RX DMA：S2MM，把 ADC stream 写到 DDR rx_buf */
+//	memset(&tr, 0, sizeof(tr));
+//	tr.size = CAPTURE_WORDS;
+//	tr.transfer_done = false;
+//	tr.cyclic = NO;          /* 如果你的枚举名不同，改成对应“非循环” */
+//	tr.src_addr = 0;                /* S2MM 流式源通常忽略 */
+//	tr.dest_addr = (uint32_t)(uintptr_t)rx_buf;
+//	ret = axi_dmac_transfer_start(rx_dmac, &tr);
+//	if (ret) {
+//		printf("axi_dmac_transfer_start(rx) failed: %d\r\n", ret);
+//		return ret;
+//	}
+//
+//	/* 等待 DMA 完成（轮询/中断方式由你 init 里 IRQ_ENABLED 决定） */
+//	ret = axi_dmac_transfer_wait_completion(rx_dmac, 1000);
+//	Xil_DCacheInvalidateRange((UINTPTR)rx_buf, CAPTURE_WORDS);
+//	if (ret) {
+//		printf("axi_dmac_transfer_wait_completion(rx) failed: %d\r\n", ret);
+//		return ret;
+//	}
+//	/* 串口只打印前 256 个样本，验证波形 */
+//	print_iq_csv(rx_buf, 1024);
+//
+//	return 0;
+//}
 /***************************************************************************//**
  * @brief main
 *******************************************************************************/
@@ -551,6 +648,15 @@ int main(void)
 	// NOTE: The user has to choose the GPIO numbers according to desired
 	// carrier board.
 	default_init_param.gpio_resetb.number = GPIO_RESET_PIN;
+
+	default_init_param.gpio_rx1_ctrl_h.number = GPIO_RX1_BAND_SEL_H;
+	default_init_param.gpio_rx1_ctrl_l.number = GPIO_RX1_BAND_SEL_L;
+	default_init_param.gpio_tx1_ctrl_h.number = GPIO_TX1_BAND_SEL_H;
+	default_init_param.gpio_tx1_ctrl_l.number = GPIO_TX1_BAND_SEL_L;
+	default_init_param.gpio_rx2_ctrl_h.number = GPIO_RX2_BAND_SEL_H;
+	default_init_param.gpio_rx2_ctrl_l.number = GPIO_RX2_BAND_SEL_L;
+	default_init_param.gpio_tx2_ctrl_h.number = GPIO_TX2_BAND_SEL_H;
+	default_init_param.gpio_tx2_ctrl_l.number = GPIO_TX2_BAND_SEL_L;
 
 #ifdef FMCOMMS5
 	default_init_param.gpio_sync.number = GPIO_SYNC_PIN;
@@ -642,6 +748,14 @@ int main(void)
 #endif
 	axi_dac_init(&ad9361_phy->tx_dac, &tx_dac_init);
 	axi_dac_set_datasel(ad9361_phy->tx_dac, -1, AXI_DAC_DATA_SEL_DDS);
+
+	uint32_t mode;
+	status = ad9361_get_en_state_machine_mode(ad9361_phy, &mode);
+	if(mode == -1){
+		console_print("fail to read state_machine mode\n");
+	}else{
+		console_print("machine mode:%d\n", mode);
+	}
 #endif
 #endif
 #endif
@@ -937,7 +1051,6 @@ int main(void)
 #endif // IIO_SUPPORT
 #ifdef CONSOLE_COMMANDS
 	get_help(NULL, 0);
-
 	while(1)
 	{
 		console_get_command(received_cmd);
