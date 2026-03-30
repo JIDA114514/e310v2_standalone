@@ -1,6 +1,19 @@
 # antsdr-no-OS
 Standalone application based on ADI hdl and no_OS for ANTSDR.
 
+代码来自于[microphase官方](https://github.com/MicroPhase/antsdr_standalone)，需要注意hdl中用于e310v2开发板的vivado项目为“antsdre310"而非"e310v2"。"e310v2"的代码生成后在下板执行时可能会报错：
+
+```
+cf-ad9361-lpc: Status errors
+SAMPL CLK: 61440000 tuning: RX
+  0:1:2:3:4:5:6:7:8:9:a:b:c:d:e:f:
+0:# # # # # # # # # # # # # # # # 
+1:# # # # # # # # # # # # # # # # 
+ad9361_dig_tune_delay: Tuning RX FAILED!
+ad9361_init : AD936x initialization error
+```
+本仓库初始提交版本相较于microphase官方裸机程序新增了一个获取I/Q数据的功能，所以程序初始输出略有不同。
+
 ## Windows下复原vivado工程
 
 ### 所需软件：
