@@ -58,9 +58,6 @@ typedef struct
 	cmd_function function;
 }command;
 
-#include "axi_dmac.h"
-#include "xil_cache.h"
-
 /******************************************************************************/
 /************************ Functions Declarations ******************************/
 /******************************************************************************/
@@ -226,8 +223,5 @@ void dds_tx2_tone2_scale(double* param, char param_no);
 
 /* Sets the DDS TX2 Tone 2 scale. */
 void set_dds_tx2_tone2_scale(double* param, char param_no);
-
-/* output I/Q signal from dma*/
-void capture_and_print_rx_iq(double* param, char param_no);
 
 #endif  // __COMMAND_H__

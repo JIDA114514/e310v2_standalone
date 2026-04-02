@@ -48,7 +48,7 @@
 /******************************************************************************/
 /********************** Macros and Constants Definitions **********************/
 /******************************************************************************/
-#define UART_BAUDRATE 115200
+#define UART_BAUDRATE 921600
 #ifdef XPAR_AXI_AD9361_0_BASEADDR
 #define AD9361_RX_0_BASEADDR		XPAR_AXI_AD9361_0_BASEADDR
 #define AD9361_TX_0_BASEADDR		XPAR_AXI_AD9361_0_BASEADDR + 0x4000
@@ -82,7 +82,7 @@
 #define ADC_DDR_BASEADDR			XPAR_DDR_MEM_BASEADDR + 0x800000
 #define DAC_DDR_BASEADDR			XPAR_DDR_MEM_BASEADDR + 0xA000000
 
-#define UART_DEVICE_ID				XPAR_XUARTPS_1_DEVICE_ID
+#define UART_DEVICE_ID			XPAR_XUARTPS_0_DEVICE_ID
 #define INTC_DEVICE_ID				XPAR_SCUGIC_SINGLE_DEVICE_ID
 
 #ifdef XPS_BOARD_ZCU102
@@ -95,12 +95,12 @@
 #define UART_IRQ_ID				XPAR_XUARTPS_0_INTR
 #else
 #define GPIO_DEVICE_ID				XPAR_PS7_GPIO_0_DEVICE_ID
-#define GPIO_RESET_PIN				68
-#define GPIO_SYNC_PIN				67
-#define GPIO_ENABLE_PIN				69
-#define GPIO_TXNRX_PIN        		70
+#define GPIO_RESET_PIN				100
+#define GPIO_SYNC_PIN				99
+#define GPIO_ENABLE_PIN				101
+#define GPIO_TXNRX_PIN        		102
 #define SPI_DEVICE_ID				XPAR_PS7_SPI_0_DEVICE_ID
-#define UART_IRQ_ID				XPAR_XUARTPS_1_INTR
+#define GIC_DEVICE_ID				XPAR_PS7_SCUGIC_0_DEVICE_ID
 #endif
 #define GPIO_RESET_PIN_ZC702		84
 #define GPIO_RESET_PIN_ZC706		83
@@ -108,10 +108,20 @@
 #define GPIO_RESET_PIN_2			113
 #define GPIO_CAL_SW1_PIN			107
 #define GPIO_CAL_SW2_PIN			108
-#define GPIO_CTL0_PIN				62
-#define GPIO_CTL1_PIN				63
-#define GPIO_CTL2_PIN				64
-#define GPIO_CTL3_PIN				65
+#define GPIO_CTL0_PIN				94
+#define GPIO_CTL1_PIN				95
+#define GPIO_CTL2_PIN				96
+#define GPIO_CTL3_PIN				97
+
+/* RF switch define */
+#define GPIO_RX1_BAND_SEL_H				54
+#define GPIO_RX1_BAND_SEL_L				55
+#define GPIO_TX1_BAND_SEL_H				56
+#define GPIO_TX1_BAND_SEL_L				57
+#define GPIO_RX2_BAND_SEL_H				58
+#define GPIO_RX2_BAND_SEL_L				59
+#define GPIO_TX2_BAND_SEL_H				60
+#define GPIO_TX2_BAND_SEL_L				61
 
 #else
 #ifdef XPAR_DDR3_SDRAM_S_AXI_BASEADDR

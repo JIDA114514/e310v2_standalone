@@ -283,6 +283,15 @@ typedef struct {
 	struct no_os_gpio_init_param	gpio_cal_sw1;	/* cal-sw1-gpios */
 	struct no_os_gpio_init_param	gpio_cal_sw2;	/* cal-sw2-gpios */
 
+	struct no_os_gpio_init_param	gpio_rx1_ctrl_h;	/* cal-sw1-gpios */
+	struct no_os_gpio_init_param	gpio_rx1_ctrl_l;	/* cal-sw2-gpios */
+	struct no_os_gpio_init_param	gpio_tx1_ctrl_h;	/* cal-sw1-gpios */
+	struct no_os_gpio_init_param	gpio_tx1_ctrl_l;	/* cal-sw2-gpios */
+	struct no_os_gpio_init_param	gpio_rx2_ctrl_h;	/* cal-sw1-gpios */
+	struct no_os_gpio_init_param	gpio_rx2_ctrl_l;	/* cal-sw2-gpios */
+	struct no_os_gpio_init_param	gpio_tx2_ctrl_h;	/* cal-sw1-gpios */
+	struct no_os_gpio_init_param	gpio_tx2_ctrl_l;	/* cal-sw2-gpios */
+
 	struct no_os_spi_init_param	spi_param;
 
 	/* External LO clocks */

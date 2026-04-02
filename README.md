@@ -12,7 +12,6 @@ SAMPL CLK: 61440000 tuning: RX
 ad9361_dig_tune_delay: Tuning RX FAILED!
 ad9361_init : AD936x initialization error
 ```
-本仓库初始提交版本相较于microphase官方裸机程序新增了一个获取I/Q数据的功能，所以程序初始输出略有不同。
 
 ## Windows下复原vivado工程
 

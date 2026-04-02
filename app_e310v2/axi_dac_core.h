@@ -58,6 +58,8 @@
 #define DDS_CHAN_TX2_Q_F1	6
 #define DDS_CHAN_TX2_Q_F2	7
 
+#define AXI_DAC_REG_DATA_SELECT(c)		(0x0418 + (c) * 0x40)
+
 /**
  * @struct axi_dac
  * @brief AXI DAC Device Descriptor.

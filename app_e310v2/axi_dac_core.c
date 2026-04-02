@@ -89,7 +89,7 @@
 
 #define DAC_REG_DATA_PATTERN(c)			(0x0410 + (c) * 0x40)
 
-#define AXI_DAC_REG_DATA_SELECT(c)		(0x0418 + (c) * 0x40)
+//#define AXI_DAC_REG_DATA_SELECT(c)		(0x0418 + (c) * 0x40)
 #define AXI_DAC_DATA_SELECT(x)			(((x) & 0xF) << 0)
 #define AXI_DAC_TO_DATA_SELECT(x)		(((x) >> 0) & 0xF)
 

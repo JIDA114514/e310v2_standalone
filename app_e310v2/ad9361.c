@@ -1022,6 +1022,15 @@ int32_t ad9361_reset(struct ad9361_rf_phy *phy)
 		return 0;
 	}
 
+	no_os_gpio_set_value(phy->gpio_desc_tx1_ctrl_h   ,0);
+	no_os_gpio_set_value(phy->gpio_desc_tx1_ctrl_l   ,1);
+	no_os_gpio_set_value(phy->gpio_desc_tx2_ctrl_h   ,0);
+	no_os_gpio_set_value(phy->gpio_desc_tx2_ctrl_l   ,1);
+	no_os_gpio_set_value(phy->gpio_desc_rx1_ctrl_h   ,0);
+	no_os_gpio_set_value(phy->gpio_desc_rx1_ctrl_l   ,1);
+	no_os_gpio_set_value(phy->gpio_desc_rx2_ctrl_h   ,0);
+	no_os_gpio_set_value(phy->gpio_desc_rx2_ctrl_l   ,1);
+
 	/* SPI Soft Reset was removed from the register map, since it doesn't
 	 * work reliably. Without a prober HW reset randomness may happen.
 	 * Please specify a RESET GPIO.

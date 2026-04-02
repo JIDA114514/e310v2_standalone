@@ -106,7 +106,6 @@ command cmd_list[] = {
 	{"dds_tx2_tone1_scale=", "Sets the DDS TX2 Tone 1 scale.", "", set_dds_tx2_tone1_scale},
 	{"dds_tx2_tone2_scale?", "Gets current DDS TX2 Tone 2 scale.", "", dds_tx2_tone2_scale},
 	{"dds_tx2_tone2_scale=", "Sets the DDS TX2 Tone 2 scale.", "", set_dds_tx2_tone2_scale},
-	{"capture_and_print_rx_iq?", "Gets I/Q signal from RX.", "", capture_and_print_rx_iq}
 };
 const char cmd_no = (sizeof(cmd_list) / sizeof(command));
 
@@ -115,65 +114,6 @@ const char cmd_no = (sizeof(cmd_list) / sizeof(command));
 /******************************************************************************/
 extern struct dds_state dds_st;
 extern struct ad9361_rf_phy *ad9361_phy;
-#define CAPTURE_WORDS   4096U
-__attribute__((aligned(64)))
-static uint32_t rx_buf[CAPTURE_WORDS];
-
-/*
- * @brief output data in csv format
- * @return None
- * */
-/* 常见打包：低16位=I，高16位=Q（如反了交换即可） */
-static void print_iq_csv(uint32_t *buf, uint32_t nwords)
-{
-	for (uint32_t n = 0; n < nwords; n++) {
-		int16_t i = (int16_t)(buf[n] & 0xFFFF);
-		int16_t q = (int16_t)((buf[n] >> 16) & 0xFFFF);
-		printf("%lu,%d,%d\n", (unsigned long)n, i, q);
-	}
-}
-
-/*
- * @brief output I/Q signal
- * @return None
- * */
-
-extern struct axi_dmac *rx_dmac;
-
-void capture_and_print_rx_iq(double* param, char param_no)
-{
-	int ret;
-	struct axi_dma_transfer tr;
-
-	/* 清空buffer（可选） */
-	for (uint32_t i = 0; i < CAPTURE_WORDS; i++)
-		rx_buf[i] = 0;
-
-	/* 启动 RX DMA：S2MM，把 ADC stream 写到 DDR rx_buf */
-	memset(&tr, 0, sizeof(tr));
-	tr.size = CAPTURE_WORDS;
-	tr.transfer_done = false;
-	tr.cyclic = NO;          /* 如果你的枚举名不同，改成对应“非循环” */
-	tr.src_addr = 0;                /* S2MM 流式源通常忽略 */
-	tr.dest_addr = (uint32_t)(uintptr_t)rx_buf;
-	ret = axi_dmac_transfer_start(rx_dmac, &tr);
-	if (ret) {
-		printf("axi_dmac_transfer_start(rx) failed: %d\r\n", ret);
-		return;
-	}
-
-	/* 等待 DMA 完成（轮询/中断方式由你 init 里 IRQ_ENABLED 决定） */
-	ret = axi_dmac_transfer_wait_completion(rx_dmac, 1000);
-	Xil_DCacheInvalidateRange((UINTPTR)rx_buf, CAPTURE_WORDS);
-	if (ret) {
-		printf("axi_dmac_transfer_wait_completion(rx) failed: %d\r\n", ret);
-		return;
-	}
-	/* 串口只打印前 256 个样本，验证波形 */
-	print_iq_csv(rx_buf, 1024);
-
-	return;
-}
 
 /**************************************************************************//***
  * @brief Show the invalid parameter message.

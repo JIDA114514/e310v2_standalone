@@ -3344,6 +3344,16 @@ struct ad9361_rf_phy {
 	struct no_os_gpio_desc 	*gpio_desc_sync;
 	struct no_os_gpio_desc 	*gpio_desc_cal_sw1;
 	struct no_os_gpio_desc 	*gpio_desc_cal_sw2;
+
+
+	struct no_os_gpio_desc 	*gpio_desc_rx1_ctrl_h;
+	struct no_os_gpio_desc 	*gpio_desc_rx1_ctrl_l;
+	struct no_os_gpio_desc 	*gpio_desc_tx1_ctrl_h;
+	struct no_os_gpio_desc 	*gpio_desc_tx1_ctrl_l;
+	struct no_os_gpio_desc 	*gpio_desc_rx2_ctrl_h;
+	struct no_os_gpio_desc 	*gpio_desc_rx2_ctrl_l;
+	struct no_os_gpio_desc 	*gpio_desc_tx2_ctrl_h;
+	struct no_os_gpio_desc 	*gpio_desc_tx2_ctrl_l;
 #ifndef AXI_ADC_NOT_PRESENT
 	struct axi_adc		*rx_adc;
 	struct axi_dac		*tx_dac;
