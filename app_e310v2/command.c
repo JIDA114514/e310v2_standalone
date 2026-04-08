@@ -106,6 +106,7 @@ command cmd_list[] = {
 	{"dds_tx2_tone1_scale=", "Sets the DDS TX2 Tone 1 scale.", "", set_dds_tx2_tone1_scale},
 	{"dds_tx2_tone2_scale?", "Gets current DDS TX2 Tone 2 scale.", "", dds_tx2_tone2_scale},
 	{"dds_tx2_tone2_scale=", "Sets the DDS TX2 Tone 2 scale.", "", set_dds_tx2_tone2_scale},
+	{"debug_information?", "Gets debug information", "", debug_information}
 };
 const char cmd_no = (sizeof(cmd_list) / sizeof(command));
 
@@ -114,6 +115,59 @@ const char cmd_no = (sizeof(cmd_list) / sizeof(command));
 /******************************************************************************/
 extern struct dds_state dds_st;
 extern struct ad9361_rf_phy *ad9361_phy;
+
+static const char *datasel_to_str(enum axi_dac_data_sel s)
+{
+    switch (s) {
+    case AXI_DAC_DATA_SEL_DDS:  return "DDS";
+    case AXI_DAC_DATA_SEL_SED:  return "SED";
+    case AXI_DAC_DATA_SEL_DMA:  return "DMA";
+    case AXI_DAC_DATA_SEL_ZERO: return "ZERO";
+    case AXI_DAC_DATA_SEL_PN7:  return "PN7";
+    case AXI_DAC_DATA_SEL_PN15: return "PN15";
+    case AXI_DAC_DATA_SEL_PN23: return "PN23";
+    case AXI_DAC_DATA_SEL_PN31: return "PN31";
+    case AXI_DAC_DATA_SEL_LB:   return "LB";
+    case AXI_DAC_DATA_SEL_PNXX: return "PNXX";
+    default: return "UNKNOWN";
+    }
+}
+
+void debug_information(double* param, char param_no){
+	uint32_t raw;
+	uint32_t ret;
+	uint32_t p, f, s;
+	uint32_t mode;
+	uint32_t tx_samp_rate;
+
+	ret = ad9361_get_en_state_machine_mode(ad9361_phy, mode);
+	if(ret == 0)printf("machine mode: %d\n", mode);
+	else printf("machine mode read error\n");
+
+	printf("base=0x%08lx num_channels=%u clock_hz=%llu\n", ad9361_phy->tx_dac->base,
+														   ad9361_phy->tx_dac->num_channels,
+														   (unsigned long long)ad9361_phy->tx_dac->clock_hz);
+
+	for (int i = 0; i < 4; i++) {
+	        axi_dac_read(ad9361_phy->tx_dac, AXI_DAC_REG_DATA_SELECT(i), &raw);
+	        enum axi_dac_data_sel sel = (enum axi_dac_data_sel)(raw & 0xF);
+	        printf("CH%u datasel_raw=0x%08lx datasel=%s(%ld)\n",
+	                   i, (unsigned long)raw, datasel_to_str(sel), (long)sel);
+	  }
+	for (int d = 0; d < 8; d++) {
+	        ret  = axi_dac_dds_get_frequency(ad9361_phy->tx_dac, d, &f);
+	        ret |= axi_dac_dds_get_phase(ad9361_phy->tx_dac, d, &p);
+	        ret |= axi_dac_dds_get_scale(ad9361_phy->tx_dac, d, &s);
+	        if (ret == 0) {
+	            printf("DDS[%u]: freq=%lu Hz phase=%lu mdeg scale=%ld u\n",
+	                       d, (unsigned long)f, (unsigned long)p, (long)s);
+	        } else {
+	            printf("DDS[%u]: read_failed ret=%ld\n", d, (long)ret);
+	        }
+	    }
+	ad9361_get_tx_sampling_freq(ad9361_phy, &tx_samp_rate);
+	printf("tx_sampling_freq:%d\n", tx_samp_rate);
+}
 
 /**************************************************************************//***
  * @brief Show the invalid parameter message.

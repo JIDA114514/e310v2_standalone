@@ -224,4 +224,6 @@ void dds_tx2_tone2_scale(double* param, char param_no);
 /* Sets the DDS TX2 Tone 2 scale. */
 void set_dds_tx2_tone2_scale(double* param, char param_no);
 
+void debug_information(double* param, char param_no);
+
 #endif  // __COMMAND_H__
