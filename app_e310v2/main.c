@@ -195,7 +195,7 @@ char				received_cmd[30] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 
 AD9361_InitParam default_init_param = {
 	/* Device selection */
-	ID_AD9361,	// dev_sel
+	ID_AD9363A,	// dev_sel
 	/* Reference Clock */
 	40000000UL,	//reference_clk_rate
 	/* Base Configuration */
@@ -684,21 +684,37 @@ int main(void)
 #endif
 	axi_dac_init(&ad9361_phy->tx_dac, &tx_dac_init);
 	axi_adc_init(&ad9361_phy->rx_adc, &rx_adc_init);
-	extern const uint32_t sine_lut_iq[1024];
+	extern const int32_t sin_lut_later[768];
+//	extern const int32_t lut_all_zero[128];
 	axi_dac_set_datasel(ad9361_phy->tx_dac, -1, AXI_DAC_DATA_SEL_DMA);
-	axi_dac_load_custom_data(ad9361_phy->tx_dac, sine_lut_iq,
-				 NO_OS_ARRAY_SIZE(sine_lut_iq),
-				 (uintptr_t)dac_buffer);
-	for (int i = 0; i < 4; i++) {
-	        uint32_t raw;
-	        axi_dac_read(ad9361_phy->tx_dac, AXI_DAC_REG_DATA_SELECT(i), &raw);
-	        enum axi_dac_data_sel sel = (enum axi_dac_data_sel)(raw & 0xF);
-	        printf("CH%u datasel_raw=0x%08lx datasel=%s(%ld)\n",
-	                   i, (unsigned long)raw, sel, (long)sel);
-	    }
+	axi_dac_load_custom_data(ad9361_phy->tx_dac, sin_lut_later,
+				 NO_OS_ARRAY_SIZE(sin_lut_later),
+				 (uintptr_t)dac_buffer);			//(uintptr_t)dac_buffer
 #ifdef XILINX_PLATFORM
 	Xil_DCacheFlush();
 #endif
+
+	struct axi_dma_transfer transfer = {
+			// Number of bytes to write/read; double because of 2T2R mode
+			.size = sizeof(sin_lut_later) * 2,
+			// Transfer done flag
+			.transfer_done = 0,
+			// Signal transfer mode
+			.cyclic = CYCLIC,
+			// Address of data source
+			.src_addr = (uintptr_t)dac_buffer,
+			// Address of data destination
+			.dest_addr = 0
+		};
+
+		/* Transfer the data. */
+		axi_dmac_transfer_start(tx_dmac, &transfer);
+
+		/* Flush cache data. */
+		Xil_DCacheInvalidateRange((uintptr_t)dac_buffer * 2,sizeof(sin_lut_later));		//double buffer size because of 2T2R mode
+
+		no_os_mdelay(1000);
+
 #else
 #ifdef FMCOMMS5
 	axi_dac_init(&ad9361_phy_b->tx_dac, &tx_dac_init);
