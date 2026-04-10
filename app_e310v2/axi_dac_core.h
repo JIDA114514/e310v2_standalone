@@ -61,6 +61,7 @@
 #define AXI_DAC_REG_DATA_SELECT(c)		(0x0418 + (c) * 0x40)
 
 extern const int32_t sin_lut_later[768];
+extern const uint32_t hopping_iq_luts[5][1024];
 /**
  * @struct axi_dac
  * @brief AXI DAC Device Descriptor.

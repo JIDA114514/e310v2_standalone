@@ -2,7 +2,7 @@
  *   @file   app_config.h
  *   @brief  Config file of AD9361/API Driver.
  *   @author DBogdan (dragos.bogdan@analog.com)
-********************************************************************************
+ ********************************************************************************
  * Copyright 2015(c) Analog Devices, Inc.
  *
  * All rights reserved.
@@ -35,7 +35,7 @@
  * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
  * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*******************************************************************************/
+ *******************************************************************************/
 #ifndef CONFIG_H_
 #define CONFIG_H_
 
@@ -48,16 +48,16 @@
 #define CONSOLE_COMMANDS
 #define ANTSDR_E310
 #define XILINX_PLATFORM
-//#define ALTERA_PLATFORM
-//#define LINUX_PLATFORM
-//#define FMCOMMS5
+// #define ALTERA_PLATFORM
+// #define LINUX_PLATFORM
+// #define FMCOMMS5
 #define ADI_RF_SOM
-//#define ADI_RF_SOM_CMOS
-//#define ADC_DMA_EXAMPLE
-//#define ADC_DMA_IRQ_EXAMPLE
-#define DAC_DMA_EXAMPLE
-//#define AXI_ADC_NOT_PRESENT
-//#define TDD_SWITCH_STATE_EXAMPLE
+// #define ADI_RF_SOM_CMOS
+// #define ADC_DMA_EXAMPLE
+// #define ADC_DMA_IRQ_EXAMPLE
+// #define DAC_DMA_EXAMPLE
+// #define AXI_ADC_NOT_PRESENT
+// #define TDD_SWITCH_STATE_EXAMPLE
 
 //#define IIO_SUPPORT
 
