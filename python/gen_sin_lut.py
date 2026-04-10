@@ -33,6 +33,7 @@ def generate_iq_lut(N=1024, M=8, amplitude=9830, i_high_q_low=False):
             word = (q_hex << 16) | i_hex 
             
         lut.append(word)
+        lut.append(word)
     return lut
 
 # ================= 配置区 =================
@@ -45,7 +46,7 @@ vals = generate_iq_lut(N=N_SAMPLES, M=CYCLES, amplitude=AMP, i_high_q_low=False)
 
 # ================= 打印输出 =================
 print(f"// CYCLES={CYCLES}, N={N_SAMPLES}, AMPLITUDE={AMP}")
-print(f"const uint32_t custom_iq_lut[{N_SAMPLES}] = {{")
+print(f"const uint32_t custom_iq_lut[{N_SAMPLES} * 2] = {{")
 for i in range(0, len(vals), 8):
     chunk = vals[i:i+8]
     # 格式化为 8 位的十六进制并以逗号分割

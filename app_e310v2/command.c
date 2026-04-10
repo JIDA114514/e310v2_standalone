@@ -49,6 +49,7 @@
 #include "app_config.h"
 #include "axi_dmac.h"
 #include "no_os_delay.h"
+#include "no_os_axi_io.h"
 
 /******************************************************************************/
 /************************ Constants Definitions *******************************/
@@ -117,9 +118,9 @@ const char cmd_no = (sizeof(cmd_list) / sizeof(command));
 /******************************************************************************/
 
 extern struct ad9361_rf_phy *ad9361_phy;
-extern uint32_t dac_buffer[768 * 2] __attribute__((aligned));
 extern struct axi_dmac *tx_dmac;
 extern const int32_t sin_lut_later[768];
+extern const uint32_t custom_iq_lut[768 * 2];
 static struct axi_dma_transfer transfer = {
 	// Number of bytes to write/read; double because of 2T2R mode
 	.size = 3072 * 2,
@@ -128,7 +129,7 @@ static struct axi_dma_transfer transfer = {
 	// Signal transfer mode
 	.cyclic = CYCLIC,
 	// Address of data source
-	.src_addr = (uintptr_t)dac_buffer,
+	.src_addr = (uintptr_t)custom_iq_lut,
 	// Address of data destination
 	.dest_addr = 0};
 
@@ -207,18 +208,13 @@ void debug_information(double *param, char param_no)
 
 void dma_tx_demo(double *param, char param_no)
 {
-    axi_dac_set_datasel(ad9361_phy->tx_dac, -1, AXI_DAC_DATA_SEL_DMA);
-	axi_dac_load_custom_data(ad9361_phy->tx_dac, sin_lut_later,
-							 NO_OS_ARRAY_SIZE(sin_lut_later),
-							 (uintptr_t)dac_buffer);
+        axi_dac_set_datasel(ad9361_phy->tx_dac, -1, AXI_DAC_DATA_SEL_DMA);
 	printf("dma data loaded!\n");
-	printf("tx_dmac pointer:0x%08x\n", (uint32_t)tx_dmac);
-	printf("sizeof(sin_lut_later):%d\n", sizeof(sin_lut_later));
 	Xil_DCacheFlush();
 	/* Flush cache data. */
-	Xil_DCacheInvalidateRange((uintptr_t)dac_buffer, sizeof(sin_lut_later)); // double buffer size because of 2T2R mode
-	//
-	//	/* Transfer the data. */
+	Xil_DCacheInvalidateRange((uintptr_t)custom_iq_lut, sizeof(custom_iq_lut));
+	/* Transfer the data. */
+	axi_dac_write(ad9361_phy->tx_dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
 	int ret = axi_dmac_transfer_start(tx_dmac, &transfer);
 	if (ret == 0)
 		printf("start transfer!\n");
