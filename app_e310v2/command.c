@@ -50,13 +50,14 @@
 #include "axi_dmac.h"
 #include "no_os_delay.h"
 #include "no_os_axi_io.h"
+#include "xtime_l.h"
 
 /******************************************************************************/
 /************************ Constants Definitions *******************************/
 /******************************************************************************/
 command cmd_list[] = {
 	{"help?", "Displays all available commands.", "", get_help},
-	{"register?", "Gets the specified register value.", "", get_register},
+	// {"register?", "Gets the specified register value.", "", get_register},
 	{"tx_lo_freq?", "Gets current TX LO frequency [MHz].", "", get_tx_lo_freq},
 	{"tx_lo_freq=", "Sets the TX LO frequency [MHz].", "", set_tx_lo_freq},
 	{"tx_samp_freq?", "Gets current TX sampling frequency [Hz].", "", get_tx_samp_freq},
@@ -65,10 +66,10 @@ command cmd_list[] = {
 	{"tx_rf_bandwidth=", "Sets the TX RF bandwidth [Hz].", "", set_tx_rf_bandwidth},
 	{"tx1_attenuation?", "Gets current TX1 attenuation [mdB].", "", get_tx1_attenuation},
 	{"tx1_attenuation=", "Sets the TX1 attenuation [mdB].", "", set_tx1_attenuation},
-	{"tx2_attenuation?", "Gets current TX2 attenuation [mdB].", "", get_tx2_attenuation},
-	{"tx2_attenuation=", "Sets the TX2 attenuation [mdB].", "", set_tx2_attenuation},
-	{"tx_fir_en?", "Gets current TX FIR state.", "", get_tx_fir_en},
-	{"tx_fir_en=", "Sets the TX FIR state.", "", set_tx_fir_en},
+	// {"tx2_attenuation?", "Gets current TX2 attenuation [mdB].", "", get_tx2_attenuation},
+	// {"tx2_attenuation=", "Sets the TX2 attenuation [mdB].", "", set_tx2_attenuation},
+	// {"tx_fir_en?", "Gets current TX FIR state.", "", get_tx_fir_en},
+	// {"tx_fir_en=", "Sets the TX FIR state.", "", set_tx_fir_en},
 	{"rx_lo_freq?", "Gets current RX LO frequency [MHz].", "", get_rx_lo_freq},
 	{"rx_lo_freq=", "Sets the RX LO frequency [MHz].", "", set_rx_lo_freq},
 	{"rx_samp_freq?", "Gets current RX sampling frequency [Hz].", "", get_rx_samp_freq},
@@ -77,8 +78,8 @@ command cmd_list[] = {
 	{"rx_rf_bandwidth=", "Sets the RX RF bandwidth [Hz].", "", set_rx_rf_bandwidth},
 	{"rx1_gc_mode?", "Gets current RX1 GC mode.", "", get_rx1_gc_mode},
 	{"rx1_gc_mode=", "Sets the RX1 GC mode.", "", set_rx1_gc_mode},
-	{"rx2_gc_mode?", "Gets current RX2 GC mode.", "", get_rx2_gc_mode},
-	{"rx2_gc_mode=", "Sets the RX2 GC mode.", "", set_rx2_gc_mode},
+	// {"rx2_gc_mode?", "Gets current RX2 GC mode.", "", get_rx2_gc_mode},
+	// {"rx2_gc_mode=", "Sets the RX2 GC mode.", "", set_rx2_gc_mode},
 	{"rx1_rf_gain?", "Gets current RX1 RF gain.", "", get_rx1_rf_gain},
 	{"rx1_rf_gain=", "Sets the RX1 RF gain.", "", set_rx1_rf_gain},
 	{"rx2_rf_gain?", "Gets current RX2 RF gain.", "", get_rx2_rf_gain},
@@ -110,7 +111,11 @@ command cmd_list[] = {
 	{"dds_tx2_tone2_scale?", "Gets current DDS TX2 Tone 2 scale.", "", dds_tx2_tone2_scale},
 	{"dds_tx2_tone2_scale=", "Sets the DDS TX2 Tone 2 scale.", "", set_dds_tx2_tone2_scale},
 	{"debug_information?", "Gets debug information", "", debug_information},
-	{"dma_tx_demo?", "Sends data in dma", "", dma_tx_demo}};
+	{"dma_tx_demo?", "Sends data in dma", "", dma_tx_demo},
+	{"hopping_demo?", "Hopping frequency", "", hopping_demo},
+	{"hopping_stop?", "stop hopping demo, and set DDS", "", hopping_stop}
+};
+	
 const char cmd_no = (sizeof(cmd_list) / sizeof(command));
 
 /******************************************************************************/
@@ -119,8 +124,8 @@ const char cmd_no = (sizeof(cmd_list) / sizeof(command));
 
 extern struct ad9361_rf_phy *ad9361_phy;
 extern struct axi_dmac *tx_dmac;
-extern const int32_t sin_lut_later[768];
-extern const uint32_t custom_iq_lut[768 * 2];
+extern const uint32_t custom_iq_lut[768 * 2] __attribute__((aligned));
+extern const uint32_t neg_custom_iq_lut[768 * 2];
 static struct axi_dma_transfer transfer = {
 	// Number of bytes to write/read; double because of 2T2R mode
 	.size = 3072 * 2,
@@ -133,6 +138,10 @@ static struct axi_dma_transfer transfer = {
 	// Address of data destination
 	.dest_addr = 0};
 
+static uint8_t is_hopping_active = 0;
+static uint8_t current_channel = 0;
+static XTime last_hop_time = 0;
+#define HOP_INTERVAL_TICKS (COUNTS_PER_SECOND / 1)
 static const char *datasel_to_str(enum axi_dac_data_sel s)
 {
 	switch (s)
@@ -208,7 +217,7 @@ void debug_information(double *param, char param_no)
 
 void dma_tx_demo(double *param, char param_no)
 {
-        axi_dac_set_datasel(ad9361_phy->tx_dac, -1, AXI_DAC_DATA_SEL_DMA);
+    axi_dac_set_datasel(ad9361_phy->tx_dac, -1, AXI_DAC_DATA_SEL_DMA);
 	printf("dma data loaded!\n");
 	Xil_DCacheFlush();
 	/* Flush cache data. */
@@ -224,6 +233,64 @@ void dma_tx_demo(double *param, char param_no)
 	}
 	//
 //	no_os_mdelay(1000);
+}
+
+void hopping_demo(double *param, char param_no){
+	if(tx_dmac == NULL || ad9361_phy->tx_dac == NULL){
+		printf("errors in dma or dac\n");
+		return;
+	}
+	is_hopping_active = 1;
+	current_channel = 0;
+
+	XTime_GetTime(&last_hop_time);
+	axi_dac_set_datasel(ad9361_phy->tx_dac, -1, AXI_DAC_DATA_SEL_DMA);
+	// printf("dma data loaded!\n");
+	Xil_DCacheFlush();
+	/* Flush cache data. */
+	Xil_DCacheInvalidateRange((uintptr_t)custom_iq_lut, sizeof(custom_iq_lut));
+	/* Transfer the data. */
+	axi_dac_write(ad9361_phy->tx_dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
+	int ret = axi_dmac_transfer_start(tx_dmac, &transfer);
+	if (ret == 0)
+		printf("channel 0 running, 1MHz\n");
+	else
+	{
+		printf("dma start failed\n");
+	}
+}
+
+void hopping_stop(double *param, char param_no){
+	is_hopping_active = 0;
+	if(tx_dmac != NULL){
+		axi_dmac_transfer_stop(tx_dmac);
+		axi_dac_set_datasel(ad9361_phy->tx_dac, -1, AXI_DAC_DATA_SEL_DDS);
+		printf("dma stoped and running DDS\n");
+	}
+}
+
+void hopping_task_tick(void){
+	if(!is_hopping_active){
+		return;
+	}
+	XTime current_time;
+	XTime_GetTime(&current_time);
+
+	if((current_time - last_hop_time) >= HOP_INTERVAL_TICKS){
+		axi_dmac_transfer_stop(tx_dmac);
+		if(current_channel == 0){
+			transfer.src_addr = (uintptr_t)neg_custom_iq_lut;
+			current_channel = 1;
+			printf("channel 1 running, -1MHz\n");
+		}
+		else{
+			transfer.src_addr = (uintptr_t)custom_iq_lut;
+			current_channel = 0;
+			printf("channel 0 running, 1MHz\n");
+		}
+		axi_dmac_transfer_start(tx_dmac, &transfer);
+		last_hop_time = current_time;
+	}
 }
 
 /**************************************************************************/

@@ -95,6 +95,7 @@ static uint8_t out_buff[MAX_SIZE_BASE_ADDR];
 #include "command.h"
 #include "console.h"
 #include "string.h"
+#include "xuartps_hw.h"
 #endif
 
 /******************************************************************************/
@@ -1000,25 +1001,27 @@ int main(void)
 	//	printf("tx_dmac pointer:0x%08x\n", (uint32_t)tx_dmac);
 	while (1)
 	{
-		console_get_command(received_cmd);
-		invalid_cmd = 0;
-		for (cmd = 0; cmd < cmd_no; cmd++)
-		{
-			param_no = 0;
-			cmd_type = console_check_commands(received_cmd, cmd_list[cmd].name,
-											  param, &param_no);
-			if (cmd_type == UNKNOWN_CMD)
+		hopping_task_tick();
+		if(XUartPs_IsReceiveData(XPAR_XUARTPS_0_BASEADDR)){
+			console_get_command(received_cmd);
+			invalid_cmd = 0;
+			for (cmd = 0; cmd < cmd_no; cmd++)
 			{
+				param_no = 0;
+				cmd_type = console_check_commands(received_cmd, cmd_list[cmd].name,param, &param_no);
+				if (cmd_type == UNKNOWN_CMD)
+				{
 				invalid_cmd++;
-			}
-			else
-			{
+				}
+				else
+				{
 				cmd_list[cmd].function(param, param_no);
+				}
 			}
-		}
-		if (invalid_cmd == cmd_no)
-		{
-			console_print("Invalid command!\n");
+			if (invalid_cmd == cmd_no)
+			{
+				console_print("Invalid command!\n");
+			}
 		}
 	}
 #endif

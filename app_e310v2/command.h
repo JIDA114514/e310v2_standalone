@@ -228,4 +228,9 @@ void debug_information(double *param, char param_no);
 
 void dma_tx_demo(double *param, char param_no);
 
+void hopping_demo(double *param, char param_no);
+
+void hopping_stop(double *param, char param_no);
+
+void hopping_task_tick();
 #endif // __COMMAND_H__
