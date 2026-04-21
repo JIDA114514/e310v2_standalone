@@ -230,8 +230,10 @@ AD9361_InitParam default_init_param = {
 	/* Rate & BW Control */
 	{983040000, 245760000, 122880000, 61440000, 30720000, 30720000}, // rx_path_clock_frequencies[6] *** adi,rx-path-clock-frequencies
 	{983040000, 122880000, 122880000, 61440000, 30720000, 30720000}, // tx_path_clock_frequencies[6] *** adi,tx-path-clock-frequencies
-	18000000,														 // rf_rx_bandwidth_hz *** adi,rf-rx-bandwidth-hz
-	18000000,														 // rf_tx_bandwidth_hz *** adi,rf-tx-bandwidth-hz
+	// {960000000, 80000000, 40000000, 20000000, 10000000, 10000000}, // rx_path_clock_frequencies[6] *** adi,rx-path-clock-frequencies
+	// {960000000, 80000000, 40000000, 20000000, 10000000, 10000000}, // tx_path_clock_frequencies[6] *** adi,tx-path-clock-frequencies
+	2000000,														 // rf_rx_bandwidth_hz *** adi,rf-rx-bandwidth-hz
+	2000000,														 // rf_tx_bandwidth_hz *** adi,rf-tx-bandwidth-hz
 	/* RF Port Control */
 	0, // rx_rf_port_input_select *** adi,rx-rf-port-input-select
 	0, // tx_rf_port_input_select *** adi,tx-rf-port-input-select
@@ -998,6 +1000,7 @@ int main(void)
 #endif // IIO_SUPPORT
 #ifdef CONSOLE_COMMANDS
 	get_help(NULL, 0);
+	hopping_demo(NULL, 0);
 	//	printf("tx_dmac pointer:0x%08x\n", (uint32_t)tx_dmac);
 	while (1)
 	{

@@ -66,10 +66,10 @@ command cmd_list[] = {
 	{"tx_rf_bandwidth=", "Sets the TX RF bandwidth [Hz].", "", set_tx_rf_bandwidth},
 	{"tx1_attenuation?", "Gets current TX1 attenuation [mdB].", "", get_tx1_attenuation},
 	{"tx1_attenuation=", "Sets the TX1 attenuation [mdB].", "", set_tx1_attenuation},
-	// {"tx2_attenuation?", "Gets current TX2 attenuation [mdB].", "", get_tx2_attenuation},
-	// {"tx2_attenuation=", "Sets the TX2 attenuation [mdB].", "", set_tx2_attenuation},
-	// {"tx_fir_en?", "Gets current TX FIR state.", "", get_tx_fir_en},
-	// {"tx_fir_en=", "Sets the TX FIR state.", "", set_tx_fir_en},
+	 {"tx2_attenuation?", "Gets current TX2 attenuation [mdB].", "", get_tx2_attenuation},
+	 {"tx2_attenuation=", "Sets the TX2 attenuation [mdB].", "", set_tx2_attenuation},
+	 {"tx_fir_en?", "Gets current TX FIR state.", "", get_tx_fir_en},
+	 {"tx_fir_en=", "Sets the TX FIR state.", "", set_tx_fir_en},
 	{"rx_lo_freq?", "Gets current RX LO frequency [MHz].", "", get_rx_lo_freq},
 	{"rx_lo_freq=", "Sets the RX LO frequency [MHz].", "", set_rx_lo_freq},
 	{"rx_samp_freq?", "Gets current RX sampling frequency [Hz].", "", get_rx_samp_freq},
@@ -78,8 +78,8 @@ command cmd_list[] = {
 	{"rx_rf_bandwidth=", "Sets the RX RF bandwidth [Hz].", "", set_rx_rf_bandwidth},
 	{"rx1_gc_mode?", "Gets current RX1 GC mode.", "", get_rx1_gc_mode},
 	{"rx1_gc_mode=", "Sets the RX1 GC mode.", "", set_rx1_gc_mode},
-	// {"rx2_gc_mode?", "Gets current RX2 GC mode.", "", get_rx2_gc_mode},
-	// {"rx2_gc_mode=", "Sets the RX2 GC mode.", "", set_rx2_gc_mode},
+	 {"rx2_gc_mode?", "Gets current RX2 GC mode.", "", get_rx2_gc_mode},
+	 {"rx2_gc_mode=", "Sets the RX2 GC mode.", "", set_rx2_gc_mode},
 	{"rx1_rf_gain?", "Gets current RX1 RF gain.", "", get_rx1_rf_gain},
 	{"rx1_rf_gain=", "Sets the RX1 RF gain.", "", set_rx1_rf_gain},
 	{"rx2_rf_gain?", "Gets current RX2 RF gain.", "", get_rx2_rf_gain},
@@ -125,10 +125,13 @@ const char cmd_no = (sizeof(cmd_list) / sizeof(command));
 extern struct ad9361_rf_phy *ad9361_phy;
 extern struct axi_dmac *tx_dmac;
 extern const uint32_t custom_iq_lut[768 * 2] __attribute__((aligned));
-extern const uint32_t neg_custom_iq_lut[768 * 2];
+// extern const uint32_t neg_custom_iq_lut[768 * 2];
+extern const uint32_t ble_iq_ch37[12288] __attribute__((aligned));
+extern const uint32_t ble_iq_ch38[13764] __attribute__((aligned));
+extern const uint32_t ble_iq_ch39[32768] __attribute__((aligned));
 static struct axi_dma_transfer transfer = {
 	// Number of bytes to write/read; double because of 2T2R mode
-	.size = 3072 * 2,
+	.size = sizeof(custom_iq_lut),
 	// Transfer done flag
 	.transfer_done = 0,
 	// Signal transfer mode
@@ -141,7 +144,10 @@ static struct axi_dma_transfer transfer = {
 static uint8_t is_hopping_active = 0;
 static uint8_t current_channel = 0;
 static XTime last_hop_time = 0;
-#define HOP_INTERVAL_TICKS (COUNTS_PER_SECOND / 1)
+#define HOP_INTERVAL_TICKS (COUNTS_PER_SECOND / 50)
+#define LO_FREQ_CH37 (2402000000)
+#define LO_FREQ_CH38 (2426000000)
+#define LO_FREQ_CH39 (2480000000)
 static const char *datasel_to_str(enum axi_dac_data_sel s)
 {
 	switch (s)
@@ -224,6 +230,9 @@ void dma_tx_demo(double *param, char param_no)
 	Xil_DCacheInvalidateRange((uintptr_t)custom_iq_lut, sizeof(custom_iq_lut));
 	/* Transfer the data. */
 	axi_dac_write(ad9361_phy->tx_dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
+	transfer.cyclic = CYCLIC;
+	transfer.size = sizeof(custom_iq_lut);
+	transfer.src_addr = (uintptr_t)custom_iq_lut;
 	int ret = axi_dmac_transfer_start(tx_dmac, &transfer);
 	if (ret == 0)
 		printf("start transfer!\n");
@@ -241,19 +250,31 @@ void hopping_demo(double *param, char param_no){
 		return;
 	}
 	is_hopping_active = 1;
-	current_channel = 0;
+	current_channel = 37;
 
 	XTime_GetTime(&last_hop_time);
 	axi_dac_set_datasel(ad9361_phy->tx_dac, -1, AXI_DAC_DATA_SEL_DMA);
+	no_os_gpio_set_value(ad9361_phy->gpio_desc_tx1_ctrl_h, 0);
+	no_os_gpio_set_value(ad9361_phy->gpio_desc_tx1_ctrl_l, 1);
+	no_os_gpio_set_value(ad9361_phy->gpio_desc_tx2_ctrl_h, 0);
+	no_os_gpio_set_value(ad9361_phy->gpio_desc_tx2_ctrl_l, 1);
+	ad9361_set_tx_rf_port_output(ad9361_phy, TXB);
+	ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH37);
 	// printf("dma data loaded!\n");
 	Xil_DCacheFlush();
 	/* Flush cache data. */
-	Xil_DCacheInvalidateRange((uintptr_t)custom_iq_lut, sizeof(custom_iq_lut));
-	/* Transfer the data. */
+	Xil_DCacheFlushRange((uintptr_t)ble_iq_ch37, sizeof(ble_iq_ch37));
+	Xil_DCacheFlushRange((uintptr_t)ble_iq_ch38, sizeof(ble_iq_ch38));
+	Xil_DCacheFlushRange((uintptr_t)ble_iq_ch39, sizeof(ble_iq_ch39));
+
+	transfer.cyclic = NO;
+	transfer.size = sizeof(ble_iq_ch37);
+	transfer.src_addr = (uintptr_t)ble_iq_ch37;
+	no_os_mdelay(1);
 	axi_dac_write(ad9361_phy->tx_dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
 	int ret = axi_dmac_transfer_start(tx_dmac, &transfer);
 	if (ret == 0)
-		printf("channel 0 running, 1MHz\n");
+		printf("hopping between, 2.402GHz, 2.426GHz, 2.480GHz\n");
 	else
 	{
 		printf("dma start failed\n");
@@ -278,16 +299,26 @@ void hopping_task_tick(void){
 
 	if((current_time - last_hop_time) >= HOP_INTERVAL_TICKS){
 		axi_dmac_transfer_stop(tx_dmac);
-		if(current_channel == 0){
-			transfer.src_addr = (uintptr_t)neg_custom_iq_lut;
-			current_channel = 1;
-			printf("channel 1 running, -1MHz\n");
+		 long long offset = (rand() % 20) * 1000;
+//		uint32_t offset = 0;
+		if(current_channel == 37){
+			// transfer.src_addr = (uintptr_t)ble_iq_ch38;
+			// printf("channel 38 running\n");
+			// ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH38 - offset);
+			// current_channel++;
+		}
+		else if(current_channel == 38){
+			// transfer.src_addr = (uintptr_t)ble_iq_ch39;
+			// printf("channel 39 running\n");
+			// ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH39 - offset);
+			// current_channel++;
 		}
 		else{
-			transfer.src_addr = (uintptr_t)custom_iq_lut;
-			current_channel = 0;
-			printf("channel 0 running, 1MHz\n");
+			transfer.src_addr = (uintptr_t)ble_iq_ch37;
+			ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH37 - offset);
+			current_channel = 37;
 		}
+		no_os_mdelay(1);	//make sure tx_lo_freq stable
 		axi_dmac_transfer_start(tx_dmac, &transfer);
 		last_hop_time = current_time;
 	}

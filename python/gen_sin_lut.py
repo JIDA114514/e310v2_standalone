@@ -1,6 +1,6 @@
 import math
 
-def generate_iq_lut(N=1024, M=8, amplitude=9830, i_high_q_low=False):
+def generate_iq_lut(N=1000, M=266, amplitude=9830, i_high_q_low=False):
     """
     生成用于 DMA 发送的 IQ 查找表
     N: 数组总长度 (点数)
@@ -46,7 +46,7 @@ vals = generate_iq_lut(N=N_SAMPLES, M=CYCLES, amplitude=AMP, i_high_q_low=False)
 
 # ================= 打印输出 =================
 print(f"// CYCLES={CYCLES}, N={N_SAMPLES}, AMPLITUDE={AMP}")
-print(f"const uint32_t custom_iq_lut[{N_SAMPLES} * 2] = {{")
+print(f"const uint32_t custom_iq_lut[{N_SAMPLES} * 2] __attribute__((aligned)) = {{")
 for i in range(0, len(vals), 8):
     chunk = vals[i:i+8]
     # 格式化为 8 位的十六进制并以逗号分割
