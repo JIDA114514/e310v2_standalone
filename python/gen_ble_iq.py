@@ -219,7 +219,7 @@ def generate_ble_packet(mac_hex, name_str):
     pdu = header + payload
     
     # 4. 计算 24-bit BLE CRC (极度硬核的底层算法)
-    crc = 0xaaaaaa  # 广播信道初始种子，为0x555555的翻转
+    crc = 0x555555  # 广播信道初始种子，0xaaaaaa为0x555555的翻转
     for b in pdu:
         for i in range(8):
             bit = (b >> i) & 1
@@ -227,7 +227,7 @@ def generate_ble_packet(mac_hex, name_str):
             crc >>= 1
             if bit ^ crc_lsb:
                 # 0xDA6000 是 BLE 多项式 0x00065B 翻转后的 LSB First 异或值
-                crc ^= 0xDA6000 
+                crc ^= 0x00065B 
                 
     # 把算出的 24位 CRC 转成 3 字节 (小端序)
     crc_bytes = bytes([crc & 0xFF, (crc >> 8) & 0xFF, (crc >> 16) & 0xFF])
@@ -271,12 +271,12 @@ def main():
     # 真实场景下，你需要把正确的 MAC 地址、Adv Data 和算好的 CRC 填进来
     # 这里提供一个抓包得到的真实 BLE ADV_NONCONN_IND 原始十六进制报文
     # 包含: 接入地址 + 报头 + MAC + 数据 + CRC
-    my_mac = "FF2233445566"
+    my_mac = "FF22334455FF"
     my_name = "SDR_BLE"
     raw_packet = generate_ble_packet(my_mac, my_name)
     print("自动生成的蓝牙包 (Hex):")
     print(raw_packet.hex().upper())
-    acc_addr_bytes = bytes.fromhex("D6BE898E")
+    acc_addr_bytes = bytes.fromhex("D6BE898E")  # 0x8e89bed6的小端序
 
     pdu_hex_payload = raw_packet
     
