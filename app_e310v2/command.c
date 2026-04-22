@@ -113,7 +113,8 @@ command cmd_list[] = {
 	{"debug_information?", "Gets debug information", "", debug_information},
 	{"dma_tx_demo?", "Sends data in dma", "", dma_tx_demo},
 	{"hopping_demo?", "Hopping frequency", "", hopping_demo},
-	{"hopping_stop?", "stop hopping demo, and set DDS", "", hopping_stop}
+	{"hopping_stop?", "stop hopping demo, and set DDS", "", hopping_stop},
+	{"change_freq?", "change to next freq", "", change_freq}
 };
 	
 const char cmd_no = (sizeof(cmd_list) / sizeof(command));
@@ -126,9 +127,9 @@ extern struct ad9361_rf_phy *ad9361_phy;
 extern struct axi_dmac *tx_dmac;
 extern const uint32_t custom_iq_lut[768 * 2] __attribute__((aligned));
 // extern const uint32_t neg_custom_iq_lut[768 * 2];
-extern const uint32_t ble_iq_ch37[12288] __attribute__((aligned));
+extern const uint32_t ble_iq_ch37[13764] __attribute__((aligned));
 extern const uint32_t ble_iq_ch38[13764] __attribute__((aligned));
-extern const uint32_t ble_iq_ch39[32768] __attribute__((aligned));
+extern const uint32_t ble_iq_ch39[13764] __attribute__((aligned));
 static struct axi_dma_transfer transfer = {
 	// Number of bytes to write/read; double because of 2T2R mode
 	.size = sizeof(custom_iq_lut),
@@ -290,6 +291,25 @@ void hopping_stop(double *param, char param_no){
 	}
 }
 
+void change_freq(double *param, char param_no){
+	// current_channel++;
+	if (current_channel == 37)
+	{
+		/* code */
+		current_channel++;
+		printf("current channel: 39\n");
+	}
+	else if(current_channel == 38){
+		current_channel++;
+		printf("current channel: 37\n");
+	}
+	else{
+		current_channel = 37;
+		printf("current channel: 38\n");
+	}
+	
+}
+
 void hopping_task_tick(void){
 	if(!is_hopping_active){
 		return;
@@ -299,24 +319,24 @@ void hopping_task_tick(void){
 
 	if((current_time - last_hop_time) >= HOP_INTERVAL_TICKS){
 		axi_dmac_transfer_stop(tx_dmac);
-		 long long offset = (rand() % 20) * 1000;
-//		uint32_t offset = 0;
+		//  long long offset = (rand() % 20) * 1000;
+		uint32_t offset = 0;
 		if(current_channel == 37){
-			// transfer.src_addr = (uintptr_t)ble_iq_ch38;
+			transfer.src_addr = (uintptr_t)ble_iq_ch38;
 			// printf("channel 38 running\n");
-			// ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH38 - offset);
+			ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH38 - offset);
 			// current_channel++;
 		}
 		else if(current_channel == 38){
-			// transfer.src_addr = (uintptr_t)ble_iq_ch39;
+			transfer.src_addr = (uintptr_t)ble_iq_ch39;
 			// printf("channel 39 running\n");
-			// ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH39 - offset);
+			ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH39 - offset);
 			// current_channel++;
 		}
 		else{
 			transfer.src_addr = (uintptr_t)ble_iq_ch37;
 			ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH37 - offset);
-			current_channel = 37;
+			// current_channel = 37;
 		}
 		no_os_mdelay(1);	//make sure tx_lo_freq stable
 		axi_dmac_transfer_start(tx_dmac, &transfer);

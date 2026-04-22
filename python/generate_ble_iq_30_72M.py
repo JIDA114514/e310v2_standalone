@@ -12,7 +12,7 @@ def create_ll_payload(mac, adv_data, channel, debug = True):
     flags = bytes.fromhex("020106")     
     # 组装广播 PDU
     pdu_adv = []
-    pdu_adv.extend([0x42, (len(adv_data)+6) & 0xFF])    # PDU-Header
+    pdu_adv.extend([0x42, (len(adv_data)+9) & 0xFF])    # PDU-Header
     pdu_adv.extend(reversed(mac))                       # PDU-Payload-Adva(实际 MAC 的的反转)
     pdu_adv.extend(flags)
     pdu_adv.extend(adv_data)                            # PDU-Payload-AdvData
@@ -90,7 +90,7 @@ if __name__ == '__main__':
     mac = [0xFF,0x22,0x33,0x44,0x55,0xFF]
     adv_name = "SDR_BLE"
     adv_datas = [len(adv_name) + 1, 0x09] + [ord(char) for char in adv_name]
-    channel = 38
+    channel = 39
     
     iq_data = generate_ble_iq_30_72M(mac, adv_datas, channel)
     

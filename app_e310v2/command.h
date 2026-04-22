@@ -233,4 +233,6 @@ void hopping_demo(double *param, char param_no);
 void hopping_stop(double *param, char param_no);
 
 void hopping_task_tick();
+
+void change_freq(double *param, char param_no);
 #endif // __COMMAND_H__
