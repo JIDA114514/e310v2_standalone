@@ -13,6 +13,12 @@ ad9361_dig_tune_delay: Tuning RX FAILED!
 ad9361_init : AD936x initialization error
 ```
 
+## 新增功能
+
+目前支持BLE波形的发送，可以在37,38,39信道上发送广播包，可被商用器件或智能手机检测到。
+
+波形由python脚本生成，通过dma传输给ad9363发射。
+
 ## Windows下复原vivado工程
 
 ### 所需软件：

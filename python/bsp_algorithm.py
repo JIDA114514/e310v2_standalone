@@ -32,7 +32,6 @@ class bsp_algorithm:
                     d ^= i
 
                 lfsr <<= 1
-                i >>= 1
             ret.append(bsp_algorithm.bt_swap_bits(d))
 
         return ret
