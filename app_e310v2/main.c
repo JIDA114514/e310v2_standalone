@@ -96,6 +96,7 @@ static uint8_t out_buff[MAX_SIZE_BASE_ADDR];
 #include "console.h"
 #include "string.h"
 #include "xuartps_hw.h"
+#include "ble.h"
 #endif
 
 /******************************************************************************/
@@ -1000,11 +1001,13 @@ int main(void)
 #endif // IIO_SUPPORT
 #ifdef CONSOLE_COMMANDS
 	get_help(NULL, 0);
-	hopping_demo(NULL, 0);
+//	ble_tx_demo(NULL, 0);
+//	ble_rx_run_example_forever();
 	//	printf("tx_dmac pointer:0x%08x\n", (uint32_t)tx_dmac);
 	while (1)
 	{
-		hopping_task_tick();
+		ble_tx_task_tick();
+		ble_rx_service_poll();
 		if(XUartPs_IsReceiveData(XPAR_XUARTPS_0_BASEADDR)){
 			console_get_command(received_cmd);
 			invalid_cmd = 0;

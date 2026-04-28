@@ -51,6 +51,7 @@
 #include "no_os_delay.h"
 #include "no_os_axi_io.h"
 #include "xtime_l.h"
+#include "ble.h"
 
 /******************************************************************************/
 /************************ Constants Definitions *******************************/
@@ -112,9 +113,11 @@ command cmd_list[] = {
 	{"dds_tx2_tone2_scale=", "Sets the DDS TX2 Tone 2 scale.", "", set_dds_tx2_tone2_scale},
 	{"debug_information?", "Gets debug information", "", debug_information},
 	{"dma_tx_demo?", "Sends data in dma", "", dma_tx_demo},
-	{"hopping_demo?", "Hopping frequency", "", hopping_demo},
-	{"hopping_stop?", "stop hopping demo, and set DDS", "", hopping_stop},
-	{"change_freq?", "change to next freq", "", change_freq}
+	{"ble_tx_demo?", "Sends BLE data", "", ble_tx_demo},
+	{"ble_tx_stop?", "stop BLE TX demo, and set DDS", "", ble_tx_stop},
+	{"change_freq?", "change BLE TX chan to next freq", "", change_freq},
+	{"ble_rx_demo?", "Receive BLE packet", "", ble_rx_service_start},
+	{"ble_rx_stop?", "Stop receiving BLE packet", "", ble_rx_service_stop}
 };
 	
 const char cmd_no = (sizeof(cmd_list) / sizeof(command));
@@ -142,7 +145,7 @@ static struct axi_dma_transfer transfer = {
 	// Address of data destination
 	.dest_addr = 0};
 
-static uint8_t is_hopping_active = 0;
+static uint8_t is_ble_tx_active = 0;
 static uint8_t current_channel = 0;
 static XTime last_hop_time = 0;
 #define HOP_INTERVAL_TICKS (COUNTS_PER_SECOND / 50)
@@ -245,12 +248,12 @@ void dma_tx_demo(double *param, char param_no)
 //	no_os_mdelay(1000);
 }
 
-void hopping_demo(double *param, char param_no){
+void ble_tx_demo(double *param, char param_no){
 	if(tx_dmac == NULL || ad9361_phy->tx_dac == NULL){
 		printf("errors in dma or dac\n");
 		return;
 	}
-	is_hopping_active = 1;
+	is_ble_tx_active = 1;
 	current_channel = 37;
 
 	XTime_GetTime(&last_hop_time);
@@ -282,8 +285,8 @@ void hopping_demo(double *param, char param_no){
 	}
 }
 
-void hopping_stop(double *param, char param_no){
-	is_hopping_active = 0;
+void ble_tx_stop(double *param, char param_no){
+	is_ble_tx_active = 0;
 	if(tx_dmac != NULL){
 		axi_dmac_transfer_stop(tx_dmac);
 		axi_dac_set_datasel(ad9361_phy->tx_dac, -1, AXI_DAC_DATA_SEL_DDS);
@@ -310,8 +313,8 @@ void change_freq(double *param, char param_no){
 	
 }
 
-void hopping_task_tick(void){
-	if(!is_hopping_active){
+void ble_tx_task_tick(void){
+	if(!is_ble_tx_active){
 		return;
 	}
 	XTime current_time;
