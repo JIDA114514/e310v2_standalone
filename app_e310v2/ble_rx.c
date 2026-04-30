@@ -15,6 +15,16 @@
 
 static uint8_t bt_swap_bits(uint8_t v);
 
+/*
+ * Function: ble_sync_detect
+ * Purpose : Detect BLE preamble + access address with optional invert/bit-reverse variants.
+ * Params  : p      - Pointer to 5 bytes [preamble + 4-byte access address].
+ *           invert - Output flag, true if matched pattern is inverted.
+ *           bitrev - Output flag, true if matched pattern is bit-reversed.
+ * Return  : true if sync pattern matched, false otherwise.
+ * Principle: Real sampled bitstreams may be polarity-inverted or bit-order reversed,
+ *            so this matcher checks all combinations to improve lock robustness.
+ */
 static bool ble_sync_detect(const uint8_t *p, bool *invert, bool *bitrev)
 {
     static const uint8_t aa[4] = {
@@ -58,6 +68,18 @@ static bool ble_sync_detect(const uint8_t *p, bool *invert, bool *bitrev)
     return false;
 }
 
+/*
+ * Function: get_shifted_byte
+ * Purpose : Extract one byte from a bit-shifted stream.
+ * Params  : src      - Source byte stream.
+ *           src_len  - Source length in bytes.
+ *           byte_pos - Base byte index.
+ *           bit_off  - Right shift offset [0..7].
+ *           ok       - Output validity flag.
+ * Return  : Shifted byte value; undefined if *ok=false.
+ * Principle: BLE sync may not align on byte boundary after hard slicing,
+ *            so bytes are reconstructed from adjacent source bytes.
+ */
 static uint8_t get_shifted_byte(const uint8_t *src, size_t src_len,
                                 size_t byte_pos, uint8_t bit_off, bool *ok)
 {
@@ -78,6 +100,14 @@ static uint8_t get_shifted_byte(const uint8_t *src, size_t src_len,
                      (src[byte_pos + 1u] << (8u - bit_off)));
 }
 
+/*
+ * Function: apply_sync_transform
+ * Purpose : Apply bit-order and polarity normalization to one byte.
+ * Params  : b      - Input byte.
+ *           invert - Whether to invert all bits.
+ *           bitrev - Whether to reverse bit order.
+ * Return  : Transformed byte.
+ */
 static uint8_t apply_sync_transform(uint8_t b, bool invert, bool bitrev)
 {
     if (bitrev)
@@ -87,6 +117,12 @@ static uint8_t apply_sync_transform(uint8_t b, bool invert, bool bitrev)
     return b;
 }
 
+/*
+ * Function: bt_swap_bits
+ * Purpose : Reverse bit order in one byte.
+ * Params  : v - Input byte.
+ * Return  : Bit-reversed byte.
+ */
 static uint8_t bt_swap_bits(uint8_t v)
 {
     v = (uint8_t)(((v & 0xF0u) >> 4) | ((v & 0x0Fu) << 4));
@@ -95,6 +131,12 @@ static uint8_t bt_swap_bits(uint8_t v)
     return v;
 }
 
+/*
+ * Function: ble_channel_to_data_idx
+ * Purpose : Convert BLE logical channel number to whitening data index.
+ * Params  : ch - BLE channel number (0..39).
+ * Return  : Whitening index used by LFSR init.
+ */
 static uint8_t ble_channel_to_data_idx(uint8_t ch)
 {
     if (ch == 37u)
@@ -108,12 +150,29 @@ static uint8_t ble_channel_to_data_idx(uint8_t ch)
     return 39u;
 }
 
+/*
+ * Function: ble_rx_channel_to_freq_hz
+ * Purpose : Convert BLE channel number to RF center frequency.
+ * Params  : ble_channel - BLE channel number (0..39).
+ * Return  : Frequency in Hz.
+ */
 uint64_t ble_rx_channel_to_freq_hz(uint8_t ble_channel)
 {
     uint8_t idx = ble_channel_to_data_idx(ble_channel);
     return 2402000000ULL + (uint64_t)idx * 2000000ULL;
 }
 
+/*
+ * Function: bt_dewhiten
+ * Purpose : De-whiten BLE payload/header bytes using channel-dependent LFSR.
+ * Params  : in     - Input bytes.
+ *           len    - Byte length.
+ *           ch_idx - Whitening channel index.
+ *           out    - Output bytes.
+ * Return  : Processed byte count.
+ * Principle: BLE whitening is XOR with PN sequence; receiver regenerates PN
+ *            from channel index and applies same XOR to recover original bits.
+ */
 static size_t bt_dewhiten(const uint8_t *in, size_t len, uint8_t ch_idx,
                          uint8_t *out)
 {
@@ -138,7 +197,17 @@ static size_t bt_dewhiten(const uint8_t *in, size_t len, uint8_t ch_idx,
     return len;
 }
 
-static void bt_crc24(const uint8_t *data, size_t length, uint8_t out[3])
+/*
+ * Function: bt_crc24
+ * Purpose : Compute BLE 24-bit CRC for PDU header+payload.
+ * Params  : data   - Input bytes.
+ *           length - Byte count.
+ *           out    - Output CRC bytes [3].
+ * Return  : None.
+ * Principle: Implements BLE bit-serial CRC with init 0x555555 and polynomial
+ *            equivalent taps used by advertising channels.
+ */
+void bt_crc24(const uint8_t *data, size_t length, uint8_t out[3])
 {
     size_t i;
     out[0] = 0x55u;
@@ -149,9 +218,9 @@ static void bt_crc24(const uint8_t *data, size_t length, uint8_t out[3])
         uint8_t d = data[i];
         uint8_t b;
         for (b = 0; b < 8u; b++) {
-            uint8_t t = (uint8_t)((out[0] >> 7) & 1u);
+            uint8_t t = (uint8_t)((out[0] >> 7) & 1u);  //取crc最高位
 
-            out[0] <<= 1;
+            out[0] <<= 1;               //crc整体左移
             if (out[1] & 0x80u)
                 out[0] |= 1u;
 
@@ -161,8 +230,8 @@ static void bt_crc24(const uint8_t *data, size_t length, uint8_t out[3])
 
             out[2] <<= 1;
 
-            if ((d & 1u) != t) {
-                out[2] ^= 0x5Bu;
+            if ((d & 1u) != t) {        //取当前数据最低位
+                out[2] ^= 0x5Bu;        //BLE CRC24 poly:0x165B
                 out[1] ^= 0x06u;
             }
 
@@ -170,16 +239,29 @@ static void bt_crc24(const uint8_t *data, size_t length, uint8_t out[3])
         }
     }
 
-    out[0] = bt_swap_bits(out[0]);
+    out[0] = bt_swap_bits(out[0]);     //反转字节位序（BLE强制要求）
     out[1] = bt_swap_bits(out[1]);
     out[2] = bt_swap_bits(out[2]);
 }
 
+/*
+ * Function: pdu_type_valid
+ * Purpose : Validate advertising PDU type range.
+ * Params  : t - PDU type nibble.
+ * Return  : true if in supported range, false otherwise.
+ */
 static bool pdu_type_valid(uint8_t t)
 {
     return t <= 0x06u;
 }
 
+/*
+ * Function: consume_frame_buf
+ * Purpose : Drop consumed bytes from frame assembly buffer.
+ * Params  : rx       - Receiver context.
+ *           consumed - Number of bytes to discard from head.
+ * Return  : None.
+ */
 static void consume_frame_buf(ble_rx_port_t *rx, size_t consumed)
 {
     size_t left;
@@ -188,10 +270,20 @@ static void consume_frame_buf(ble_rx_port_t *rx, size_t consumed)
         return;
     }
     left = rx->frame_buf_len - consumed;
+    //memmove支持重叠内存复制
     memmove(rx->frame_buf, rx->frame_buf + consumed, left);
     rx->frame_buf_len = left;
 }
 
+/*
+ * Function: parse_frames
+ * Purpose : Parse assembled hard-sliced bytes into BLE frames.
+ * Params  : rx - Receiver context.
+ * Return  : None.
+ * Principle: Continuously searches sync word (with bit offset), normalizes
+ *            bit polarity/order, de-whitens header/payload, validates length
+ *            and CRC, then emits parsed PDU via callback.
+ */
 static void parse_frames(ble_rx_port_t *rx)
 {
     uint8_t dewhite[260];
@@ -200,6 +292,7 @@ static void parse_frames(ble_rx_port_t *rx)
     uint8_t ch_idx_a = ble_channel_to_data_idx(rx->ble_channel);
     uint8_t ch_idx_b = rx->ble_channel;
 
+    //缓冲区长度大于最小帧长度就开始尝试解析BLE信号
     while (rx->frame_buf_len - pos >= BLE_MIN_FRAME_LEN + 1u) {
         size_t start;
         uint8_t bit_off;
@@ -219,19 +312,21 @@ static void parse_frames(ble_rx_port_t *rx)
         uint8_t crc_calc[3];
         size_t pkt_start = 0;
         uint8_t pkt_off = 0;
-
+        
+        //搜索前导码和接入地址，考虑到可能的比特偏移，需要额外搜索
         for (start = pos; start + 5u <= rx->frame_buf_len; start++) {
             for (bit_off = 0u; bit_off < 8u; bit_off++) {
                 uint8_t s[5];
                 bool ok = true;
                 size_t k;
-
+                
+                //遍历可能的比特偏移
                 for (k = 0; k < 5u; k++)
-                    s[k] = get_shifted_byte(rx->frame_buf, rx->frame_buf_len,
-                                            start + k, bit_off, &ok);
+                    s[k] = get_shifted_byte(rx->frame_buf, rx->frame_buf_len, start + k, bit_off, &ok);
                 if (!ok)
                     continue;
-
+                
+                //检测前导码和接入地址是否存在
                 if (ble_sync_detect(s, &sync_invert, &sync_bitrev)) {
                     pkt_start = start;
                     pkt_off = bit_off;
@@ -245,6 +340,7 @@ static void parse_frames(ble_rx_port_t *rx)
 
         if (!found) {
             if (rx->frame_buf_len > 5u) {
+                //清空缓冲区
                 consume_frame_buf(rx, rx->frame_buf_len - 5u);
             }
             return;
@@ -252,7 +348,8 @@ static void parse_frames(ble_rx_port_t *rx)
 
         rx->sync_hits++;
 
-        {
+        {   
+            //读取PDU header
             bool ok = true;
             raw_in[0] = apply_sync_transform(
                 get_shifted_byte(rx->frame_buf, rx->frame_buf_len,
@@ -269,12 +366,14 @@ static void parse_frames(ble_rx_port_t *rx)
             }
 
             used_ch_idx = ch_idx_a;
+            //解白化
             bt_dewhiten(raw_in, BLE_PDU_HDR_LEN, used_ch_idx, hdr);
         }
 
         pdu_type = (uint8_t)(hdr[0] & 0x0Fu);
         payload_len = (uint8_t)(hdr[1] & 0x3Fu);
 
+        //信道A失败后尝试信道B解码
         if ((!pdu_type_valid(pdu_type) || payload_len > 37u) &&
             ch_idx_b != ch_idx_a) {
             used_ch_idx = ch_idx_b;
@@ -282,7 +381,8 @@ static void parse_frames(ble_rx_port_t *rx)
             pdu_type = (uint8_t)(hdr[0] & 0x0Fu);
             payload_len = (uint8_t)(hdr[1] & 0x3Fu);
         }
-
+        
+        //如果仍然失败，尝试反转比特
         if (!pdu_type_valid(pdu_type) || payload_len > 37u) {
             bool ok = true;
             hdr_raw[0] = apply_sync_transform(
@@ -304,6 +404,7 @@ static void parse_frames(ble_rx_port_t *rx)
                     need_raw = 1u + 4u + BLE_PDU_HDR_LEN + payload_len + BLE_CRC_LEN;
                     src_need_raw = need_raw + (pkt_off ? 1u : 0u);
                     if (rx->frame_buf_len - pkt_start < src_need_raw) {
+                        //如果发现当前缓冲区只有部分包，就继续读取
                         if (pkt_start > 0u)
                             consume_frame_buf(rx, pkt_start);
                         return;
@@ -328,45 +429,7 @@ static void parse_frames(ble_rx_port_t *rx)
                     rx->raw_sync_frames++;
                     rx->emitted_frames++;
                     if (rx->on_packet)
-                        rx->on_packet(raw_in, nbytes, rx->on_packet_ctx);
-                    consume_frame_buf(rx, pkt_start + src_need_raw);
-                    pos = 0;
-                    continue;
-                }
-
-                pdu_type = (uint8_t)(hdr_inv[0] & 0x0Fu);
-                payload_len = (uint8_t)(hdr_inv[1] & 0x3Fu);
-                if (pdu_type_valid(pdu_type) && payload_len <= 37u) {
-                    size_t i;
-                    size_t nbytes = BLE_PDU_HDR_LEN + payload_len + BLE_CRC_LEN;
-                    need_raw = 1u + 4u + BLE_PDU_HDR_LEN + payload_len + BLE_CRC_LEN;
-                    src_need_raw = need_raw + (pkt_off ? 1u : 0u);
-                    if (rx->frame_buf_len - pkt_start < src_need_raw) {
-                        if (pkt_start > 0u)
-                            consume_frame_buf(rx, pkt_start);
-                        return;
-                    }
-
-                    raw_in[0] = hdr_inv[0];
-                    raw_in[1] = hdr_inv[1];
-                    for (i = 2u; i < nbytes; i++) {
-                        uint8_t b = apply_sync_transform(
-                            get_shifted_byte(rx->frame_buf, rx->frame_buf_len,
-                                             pkt_start + 5u + i, pkt_off, &ok),
-                            sync_invert, sync_bitrev);
-                        if (!ok)
-                            break;
-                        raw_in[i] = (uint8_t)(b ^ 0xFFu);
-                    }
-                    if (!ok) {
-                        if (pkt_start > 0u)
-                            consume_frame_buf(rx, pkt_start);
-                        return;
-                    }
-
-                    rx->raw_sync_frames++;
-                    rx->emitted_frames++;
-                    if (rx->on_packet)
+                    //此时包解析其实仍然失败了，只完成报头分析，输出以debug
                         rx->on_packet(raw_in, nbytes, rx->on_packet_ctx);
                     consume_frame_buf(rx, pkt_start + src_need_raw);
                     pos = 0;
@@ -385,6 +448,7 @@ static void parse_frames(ble_rx_port_t *rx)
         need = 1u + 4u + BLE_PDU_HDR_LEN + payload_len + BLE_CRC_LEN;
         src_need = need + (pkt_off ? 1u : 0u);
         if (rx->frame_buf_len - pkt_start < src_need) {
+            //判断当前缓冲区内容是否足够解包
             if (pkt_start > 0u)
                 consume_frame_buf(rx, pkt_start);
             return;
@@ -441,9 +505,17 @@ static void parse_frames(ble_rx_port_t *rx)
         consume_frame_buf(rx, pos);
 }
 
+/*
+ * Function: append_byte_and_parse
+ * Purpose : Push one demodulated byte into parser FIFO and trigger parsing.
+ * Params  : rx - Receiver context.
+ *           b  - New byte.
+ * Return  : None.
+ */
 static void append_byte_and_parse(ble_rx_port_t *rx, uint8_t b)
 {
     if (rx->frame_buf_len >= sizeof(rx->frame_buf)) {
+        //如果接收缓冲区满，就将后一半的数据搬移到前一半，覆盖原始数据
         consume_frame_buf(rx, rx->frame_buf_len / 2u);
     }
     rx->frame_buf[rx->frame_buf_len++] = b;
@@ -451,6 +523,18 @@ static void append_byte_and_parse(ble_rx_port_t *rx, uint8_t b)
         parse_frames(rx);
 }
 
+/*
+ * Function: ble_rx_port_init
+ * Purpose : Initialize BLE receiver context.
+ * Params  : rx             - Receiver context output.
+ *           sample_rate_hz - ADC sample rate.
+ *           symbol_rate_hz - BLE symbol rate.
+ *           ble_channel    - Initial BLE channel.
+ *           strict_crc     - true: drop CRC-failed PDUs, false: emit fallback PDUs.
+ *           on_packet      - Callback for emitted BLE PDU.
+ *           on_packet_ctx  - User context for callback.
+ * Return  : 0 on success, negative on invalid arguments.
+ */
 int ble_rx_port_init(ble_rx_port_t *rx, uint32_t sample_rate_hz,
                      uint32_t symbol_rate_hz, uint8_t ble_channel,
                      bool strict_crc, ble_packet_handler_t on_packet,
@@ -475,6 +559,12 @@ int ble_rx_port_init(ble_rx_port_t *rx, uint32_t sample_rate_hz,
     return 0;
 }
 
+/*
+ * Function: ble_rx_port_reset
+ * Purpose : Reset runtime demod/parser states while keeping configuration.
+ * Params  : rx - Receiver context.
+ * Return  : None.
+ */
 void ble_rx_port_reset(ble_rx_port_t *rx)
 {
     if (!rx)
@@ -493,6 +583,16 @@ void ble_rx_port_reset(ble_rx_port_t *rx)
     rx->frame_buf_len = 0;
 }
 
+/*
+ * Function: ble_rx_port_process_iq_i16
+ * Purpose : Demodulate contiguous I/Q pairs and feed frame parser.
+ * Params  : rx            - Receiver context.
+ *           iq            - Interleaved int16 I,Q,I,Q... samples.
+ *           iq_pair_count - Number of IQ pairs.
+ * Return  : None.
+ * Principle: Uses differential phase discriminator metric I[n]*Q[n-1]-Q[n]*I[n-1],
+ *            integrates over one symbol interval, hard-slices to bits, packs bytes.
+ */
 void ble_rx_port_process_iq_i16(ble_rx_port_t *rx, const int16_t *iq,
                                 size_t iq_pair_count)
 {
@@ -512,7 +612,8 @@ void ble_rx_port_process_iq_i16(ble_rx_port_t *rx, const int16_t *iq,
             rx->have_prev = true;
             continue;
         }
-
+        
+        //差分正交解调：相位差=当前IQ * 前一个IQ共轭的虚部(复指数相乘的等价运算)
         metric = (float)i * (float)rx->prev_q - (float)q * (float)rx->prev_i;
         rx->prev_i = i;
         rx->prev_q = q;
@@ -524,7 +625,7 @@ void ble_rx_port_process_iq_i16(ble_rx_port_t *rx, const int16_t *iq,
             rx->metric_acc += metric;
         else
             rx->metric_acc -= metric;
-        rx->sym_metric_sum += metric;
+        rx->sym_metric_sum += metric;       //判决指标
         rx->phase_acc += 1.0f;
         rx->sample_count++;
 
@@ -545,6 +646,17 @@ void ble_rx_port_process_iq_i16(ble_rx_port_t *rx, const int16_t *iq,
     }
 }
 
+/*
+ * Function: ble_rx_port_process_iq_i16_strided
+ * Purpose : Demodulate selected IQ lanes from multi-channel DMA layout.
+ * Params  : rx                - Receiver context.
+ *           samples           - Raw sample words.
+ *           sample_word_count - Number of int16 words.
+ *           i_index           - I index inside one stride group.
+ *           q_index           - Q index inside one stride group.
+ *           stride_words      - Words per group.
+ * Return  : None.
+ */
 void ble_rx_port_process_iq_i16_strided(ble_rx_port_t *rx,
                                         const int16_t *samples,
                                         size_t sample_word_count,
@@ -567,6 +679,14 @@ void ble_rx_port_process_iq_i16_strided(ble_rx_port_t *rx,
     }
 }
 
+/*
+ * Function: ble_rx_port_default_printer
+ * Purpose : Basic packet callback for debug printing.
+ * Params  : ble_pdu - Parsed BLE PDU bytes [header+payload+crc].
+ *           len     - PDU length in bytes.
+ *           ctx     - Unused user context.
+ * Return  : None.
+ */
 void ble_rx_port_default_printer(const uint8_t *ble_pdu, size_t len, void *ctx)
 {
     size_t i;
@@ -583,6 +703,18 @@ void ble_rx_port_default_printer(const uint8_t *ble_pdu, size_t len, void *ctx)
     printf("\n");
 }
 
+/*
+ * Function: ble_rx_port_dma_capture_and_process
+ * Purpose : Capture one DMA block and process as contiguous IQ layout.
+ * Params  : rx               - Receiver context.
+ *           dma_capture      - Platform DMA capture callback.
+ *           dma_ctx          - DMA callback context.
+ *           adc_buf          - Destination buffer for samples.
+ *           adc_bytes        - Capture bytes.
+ *           timeout_ms       - DMA timeout.
+ *           cache_invalidate - Optional cache invalidate callback.
+ * Return  : 0 on success, negative on failure.
+ */
 int ble_rx_port_dma_capture_and_process(
     ble_rx_port_t *rx,
     ble_dma_capture_fn_t dma_capture,
@@ -611,6 +743,21 @@ int ble_rx_port_dma_capture_and_process(
     return 0;
 }
 
+/*
+ * Function: ble_rx_port_dma_capture_and_process_strided
+ * Purpose : Capture one DMA block and process selected IQ lanes from stride layout.
+ * Params  : rx               - Receiver context.
+ *           dma_capture      - Platform DMA capture callback.
+ *           dma_ctx          - DMA callback context.
+ *           adc_buf          - Destination buffer for samples.
+ *           adc_bytes        - Capture bytes.
+ *           timeout_ms       - DMA timeout.
+ *           i_index          - I index inside stride.
+ *           q_index          - Q index inside stride.
+ *           stride_words     - Words per stride group.
+ *           cache_invalidate - Optional cache invalidate callback.
+ * Return  : 0 on success, negative on failure.
+ */
 int ble_rx_port_dma_capture_and_process_strided(
     ble_rx_port_t *rx,
     ble_dma_capture_fn_t dma_capture,

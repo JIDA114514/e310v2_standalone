@@ -89,4 +89,6 @@ int ble_rx_port_dma_capture_and_process_strided(
     uint8_t stride_words,
     void (*cache_invalidate)(uintptr_t addr, uint32_t bytes));
 
+void bt_crc24(const uint8_t *data, size_t length, uint8_t out[3]);
+
 #endif

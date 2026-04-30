@@ -54,6 +54,12 @@ static uint8_t g_q_index = 1u;
 static bool g_invert_metric = false;
 static uint8_t g_symbol_phase = 0u;
 
+/*
+ * Function: adv_pdu_name
+ * Purpose : Convert advertising PDU type nibble to human-readable name.
+ * Params  : t - PDU type nibble.
+ * Return  : Constant string with type name.
+ */
 static const char *adv_pdu_name(uint8_t t)
 {
     switch (t & 0x0Fu) {
@@ -68,6 +74,12 @@ static const char *adv_pdu_name(uint8_t t)
     }
 }
 
+/*
+ * Function: print_addr
+ * Purpose : Print BLE address in sniffer style (MSB first, colon separated).
+ * Params  : addr - Pointer to 6-byte address in on-air order.
+ * Return  : None.
+ */
 static void print_addr(const uint8_t *addr)
 {
     size_t i;
@@ -75,6 +87,14 @@ static void print_addr(const uint8_t *addr)
         printf("%02X%s", addr[5u - i], (i == 5u) ? "" : ":");
 }
 
+/*
+ * Function: print_ad_list
+ * Purpose : Decode and print AD structures from advertising data.
+ * Params  : ad     - Pointer to AD payload.
+ *           ad_len - AD payload length in bytes.
+ * Return  : None.
+ * Principle: AD payload is LTV encoded as [len][type][value...], repeated.
+ */
 static void print_ad_list(const uint8_t *ad, size_t ad_len)
 {
     size_t pos = 0u;
@@ -100,6 +120,20 @@ static void print_ad_list(const uint8_t *ad, size_t ad_len)
     }
 }
 
+/*
+ * Function: score_combo_parser
+ * Purpose : Evaluate one IQ mapping/phase candidate using real parser statistics.
+ * Params  : buf            - Captured sample buffer.
+ *           words          - Number of int16 words.
+ *           i_index        - I lane index in stride.
+ *           q_index        - Q lane index in stride.
+ *           invert_metric  - Whether to invert discriminator sign.
+ *           symbol_phase   - Initial symbol phase.
+ *           sync_hits      - Optional output sync count.
+ *           candidate_hits - Optional output candidate frame count.
+ *           crc_ok_hits    - Optional output CRC-pass count.
+ * Return  : Weighted score (higher is better).
+ */
 static uint32_t score_combo_parser(const int16_t *buf, size_t words,
                                    uint8_t i_index, uint8_t q_index,
                                    bool invert_metric, uint8_t symbol_phase,
@@ -128,6 +162,21 @@ static uint32_t score_combo_parser(const int16_t *buf, size_t words,
     return t.crc_ok_frames * 1000u + t.candidate_frames * 20u + t.sync_hits;
 }
 
+/*
+ * Function: probe_combo
+ * Purpose : Quickly estimate sync likelihood for one IQ candidate.
+ * Params  : buf           - Captured sample buffer.
+ *           words         - Number of int16 words.
+ *           i_index       - I lane index in stride.
+ *           q_index       - Q lane index in stride.
+ *           invert_metric - Whether to invert discriminator sign.
+ *           symbol_phase  - Initial symbol phase.
+ *           preamble_hits - Output preamble hit counter.
+ *           aa_hits       - Output access-address hit counter.
+ * Return  : None.
+ * Principle: Uses lightweight hard slicing and window matching to rank
+ *            possible IQ/phase combinations before full parser run.
+ */
 static void probe_combo(const int16_t *buf, size_t words, uint8_t i_index,
                         uint8_t q_index, bool invert_metric,
                         uint8_t symbol_phase, uint32_t *preamble_hits,
@@ -210,6 +259,12 @@ static void probe_combo(const int16_t *buf, size_t words, uint8_t i_index,
 
 }
 
+/*
+ * Function: swap_bits8
+ * Purpose : Reverse bit order in one byte.
+ * Params  : v - Input byte.
+ * Return  : Bit-reversed byte.
+ */
 static uint8_t swap_bits8(uint8_t v)
 {
     v = (uint8_t)(((v & 0xF0u) >> 4) | ((v & 0x0Fu) << 4));
@@ -218,40 +273,13 @@ static uint8_t swap_bits8(uint8_t v)
     return v;
 }
 
-static void calc_crc24(const uint8_t *data, size_t length, uint8_t out[3])
-{
-    size_t i;
-    out[0] = 0x55u;
-    out[1] = 0x55u;
-    out[2] = 0x55u;
-
-    for (i = 0; i < length; i++) {
-        uint8_t d = data[i];
-        uint8_t b;
-        for (b = 0u; b < 8u; b++) {
-            uint8_t t = (uint8_t)((out[0] >> 7) & 1u);
-
-            out[0] <<= 1;
-            if (out[1] & 0x80u)
-                out[0] |= 1u;
-            out[1] <<= 1;
-            if (out[2] & 0x80u)
-                out[1] |= 1u;
-            out[2] <<= 1;
-
-            if ((d & 1u) != t) {
-                out[2] ^= 0x5Bu;
-                out[1] ^= 0x06u;
-            }
-            d >>= 1;
-        }
-    }
-
-    out[0] = swap_bits8(out[0]);
-    out[1] = swap_bits8(out[1]);
-    out[2] = swap_bits8(out[2]);
-}
-
+/*
+ * Function: advdata_valid_prefix
+ * Purpose : Find valid LTV prefix length inside AD payload.
+ * Params  : adv     - Pointer to AD payload.
+ *           adv_len - AD payload length.
+ * Return  : Prefix length that is LTV-consistent.
+ */
 static size_t advdata_valid_prefix(const uint8_t *adv, size_t adv_len)
 {
     size_t pos = 0u;
@@ -268,12 +296,27 @@ static size_t advdata_valid_prefix(const uint8_t *adv, size_t adv_len)
     return adv_len;
 }
 
+/*
+ * Function: adv_type_has_advdata
+ * Purpose : Check whether a PDU type carries AdvA + AD payload.
+ * Params  : pdu_type - Advertising PDU type.
+ * Return  : true if type has AD payload, false otherwise.
+ */
 static bool adv_type_has_advdata(uint8_t pdu_type)
 {
     return (pdu_type == 0x00u || pdu_type == 0x02u ||
             pdu_type == 0x04u || pdu_type == 0x06u);
 }
 
+/*
+ * Function: find_local_name_ad
+ * Purpose : Locate local name AD (0x08/0x09) in AD payload.
+ * Params  : ad       - AD payload pointer.
+ *           ad_len   - AD payload length.
+ *           name_ptr - Output pointer to name bytes.
+ *           name_len - Output name length.
+ * Return  : true if found, false otherwise.
+ */
 static bool find_local_name_ad(const uint8_t *ad, size_t ad_len,
                                const uint8_t **name_ptr, size_t *name_len)
 {
@@ -301,6 +344,13 @@ static bool find_local_name_ad(const uint8_t *ad, size_t ad_len,
     return false;
 }
 
+/*
+ * Function: print_sync_hits
+ * Purpose : Print lightweight sync probe counters for current IQ settings.
+ * Params  : buf   - Sample buffer.
+ *           words - Number of int16 words.
+ * Return  : None.
+ */
 static void print_sync_hits(const int16_t *buf, size_t words)
 {
     uint32_t preamble_hits;
@@ -315,6 +365,15 @@ static void print_sync_hits(const int16_t *buf, size_t words)
            g_i_index, g_q_index, g_invert_metric ? 1u : 0u, g_symbol_phase);
 }
 
+/*
+ * Function: auto_select_iq_combo
+ * Purpose : Auto-select best IQ lane, sign, and phase configuration.
+ * Params  : buf   - Sample buffer.
+ *           words - Number of int16 words.
+ * Return  : None.
+ * Principle: Brute-force candidates and rank by parser score + sync probes,
+ *            then store best configuration into global runtime state.
+ */
 static void auto_select_iq_combo(const int16_t *buf, size_t words)
 {
     static const uint8_t pairs[4][2] = {{0u, 1u}, {1u, 0u}, {2u, 3u}, {3u, 2u}};
@@ -379,6 +438,16 @@ static void auto_select_iq_combo(const int16_t *buf, size_t words)
            best.preamble_hits, best.aa_hits);
 }
 
+/*
+ * Function: ble_verbose_printer
+ * Purpose : Packet callback that prints BLE frames in sniffer-like format.
+ * Params  : ble_pdu - Parsed PDU bytes [header+payload+crc].
+ *           len     - PDU length in bytes.
+ *           ctx     - User context (unused).
+ * Return  : None.
+ * Principle: Validates CRC interpretation, optionally bit-reverses representation,
+ *            then prints PDU type, address, AD list, and optional local name.
+ */
 static void ble_verbose_printer(const uint8_t *ble_pdu, size_t len, void *ctx)
 {
     size_t i;
@@ -426,8 +495,9 @@ static void ble_verbose_printer(const uint8_t *ble_pdu, size_t len, void *ctx)
 
     adv = ble_pdu + 2u;
 
+    /* Try raw header interpretation first, then bit-reversed interpretation. */
     if (len_a <= 37u && len >= (size_t)(2u + len_a + 3u)) {
-        calc_crc24(ble_pdu, 2u + len_a, crc_a);
+        bt_crc24(ble_pdu, 2u + len_a, crc_a);
         crc_ok_a = (crc_a[0] == ble_pdu[2u + len_a] &&
                     crc_a[1] == ble_pdu[2u + len_a + 1u] &&
                     crc_a[2] == ble_pdu[2u + len_a + 2u]);
@@ -438,7 +508,7 @@ static void ble_verbose_printer(const uint8_t *ble_pdu, size_t len, void *ctx)
         uint8_t tmp[64];
         for (j = 0u; j < (size_t)(2u + len_b + 3u) && j < sizeof(tmp); j++)
             tmp[j] = swap_bits8(ble_pdu[j]);
-        calc_crc24(tmp, 2u + len_b, crc_b);
+        bt_crc24(tmp, 2u + len_b, crc_b);
         crc_ok_b = (crc_b[0] == tmp[2u + len_b] &&
                     crc_b[1] == tmp[2u + len_b + 1u] &&
                     crc_b[2] == tmp[2u + len_b + 2u]);
@@ -455,6 +525,7 @@ static void ble_verbose_printer(const uint8_t *ble_pdu, size_t len, void *ctx)
         payload_len = (len >= 5u) ? (len - 5u) : 0u;
     }
 
+    /* Apply selected interpretation and run payload sanity checks. */
     if (header_ok && payload_len >= 8u) {
         size_t j;
         if (use_swapped) {
@@ -528,6 +599,13 @@ static void ble_verbose_printer(const uint8_t *ble_pdu, size_t len, void *ctx)
     }
 }
 
+/*
+ * Function: print_iq_stats
+ * Purpose : Print min/max/average statistics for selected IQ lanes.
+ * Params  : buf   - Sample buffer.
+ *           words - Number of int16 words.
+ * Return  : None.
+ */
 static void print_iq_stats(const int16_t *buf, size_t words)
 {
     size_t n;
@@ -565,6 +643,14 @@ static void print_iq_stats(const int16_t *buf, size_t words)
            min_q, max_q, sum_q / (int64_t)cnt);
 }
 
+/*
+ * Function: ble_rx_service_init_once
+ * Purpose : One-time initialization of BLE RX service and RF front-end setup.
+ * Params  : None.
+ * Return  : 0 on success, negative on failure.
+ * Principle: Configure AD9361 clocks/LO, run one capture for IQ auto-select,
+ *            then reset parser state and mark service initialized.
+ */
 static int32_t ble_rx_service_init_once(void)
 {
     int32_t status;
@@ -626,8 +712,15 @@ static int32_t ble_rx_service_init_once(void)
     return 0;
 }
 
+/*
+ * Function: ble_rx_service_start
+ * Purpose : Start BLE RX service state machine.
+ * Params  : Not used.
+ * Return  : None.
+ */
 void ble_rx_service_start(double *param, char param_no)
 {
+	printf("BLE service starting!\n");
     int32_t status = ble_rx_service_init_once();
     if (status < 0) {
         printf("ble_rx_service_start failed: %" PRIi32 "\n", status);
@@ -640,6 +733,12 @@ void ble_rx_service_start(double *param, char param_no)
     }
 }
 
+/*
+ * Function: ble_rx_service_stop
+ * Purpose : Stop BLE RX service and clear runtime states to defaults.
+ * Params  : Not used.
+ * Return  : None.
+ */
 void ble_rx_service_stop(double *param, char param_no)
 {
     g_service_running = false;
@@ -669,6 +768,14 @@ void ble_rx_service_stop(double *param, char param_no)
     printf("BLE service stopped and reset\n");
 }
 
+/*
+ * Function: ble_rx_service_poll
+ * Purpose : Execute one service iteration (hop channel + DMA capture + decode).
+ * Params  : None.
+ * Return  : None.
+ * Principle: Called from main loop; performs time-based channel hopping every
+ *            20 ms and continuously feeds DMA samples into BLE parser.
+ */
 void ble_rx_service_poll(void)
 {
     int32_t status;
@@ -677,19 +784,21 @@ void ble_rx_service_poll(void)
     if (!g_service_running)
         return;
 
-    XTime_GetTime(&now);
-    if ((now - g_last_hop_tick) >= g_hop_ticks) {
-        g_last_hop_tick = now;
-        g_adv_idx = (uint8_t)((g_adv_idx + 1u) % 3u);
-        g_rx.ble_channel = g_adv_channels[g_adv_idx];
-        g_rf_hz = ble_rx_channel_to_freq_hz(g_rx.ble_channel);
-        status = ad9361_set_rx_lo_freq(ad9361_phy, g_rf_hz);
-        if (status >= 0) {
-            printf("hop: ch=%u rx_lo=%" PRIu64 "Hz\n",
-                   g_rx.ble_channel, g_rf_hz);
-        }
-    }
+    /* Time-sliced hop among 37/38/39 to cover BLE advertising channels. */
+//    XTime_GetTime(&now);
+//    if ((now - g_last_hop_tick) >= g_hop_ticks) {
+//        g_last_hop_tick = now;
+//        g_adv_idx = (uint8_t)((g_adv_idx + 1u) % 3u);
+//        g_rx.ble_channel = g_adv_channels[g_adv_idx];
+//        g_rf_hz = ble_rx_channel_to_freq_hz(g_rx.ble_channel);
+//        status = ad9361_set_rx_lo_freq(ad9361_phy, g_rf_hz);
+//        if (status >= 0) {
+//            printf("hop: ch=%u rx_lo=%" PRIu64 "Hz\n",
+//                   g_rx.ble_channel, g_rf_hz);
+//        }
+//    }
 
+    /* Capture one DMA block and decode selected IQ pair. */
     status = ble_rx_port_dma_capture_and_process_strided(
         &g_rx,
         ble_adi_dma_capture,
@@ -750,6 +859,12 @@ void ble_rx_service_poll(void)
     }
 }
 
+/*
+ * Function: ble_rx_run_example_forever
+ * Purpose : Backward-compatible blocking runner.
+ * Params  : None.
+ * Return  : None.
+ */
 void ble_rx_run_example_forever(void)
 {
     ble_rx_service_start(0 ,0);
