@@ -137,7 +137,7 @@ static uint8_t bt_swap_bits(uint8_t v)
  * Params  : ch - BLE channel number (0..39).
  * Return  : Whitening index used by LFSR init.
  */
-static uint8_t ble_channel_to_data_idx(uint8_t ch)
+uint8_t ble_channel_to_data_idx(uint8_t ch)
 {
     if (ch == 37u)
         return 0u;
@@ -163,8 +163,8 @@ uint64_t ble_rx_channel_to_freq_hz(uint8_t ble_channel)
 }
 
 /*
- * Function: bt_dewhiten
- * Purpose : De-whiten BLE payload/header bytes using channel-dependent LFSR.
+ * Function: bt_whiten
+ * Purpose : Whiten/de-whiten BLE payload/header bytes using channel-dependent LFSR.
  * Params  : in     - Input bytes.
  *           len    - Byte length.
  *           ch_idx - Whitening channel index.
@@ -173,8 +173,7 @@ uint64_t ble_rx_channel_to_freq_hz(uint8_t ble_channel)
  * Principle: BLE whitening is XOR with PN sequence; receiver regenerates PN
  *            from channel index and applies same XOR to recover original bits.
  */
-static size_t bt_dewhiten(const uint8_t *in, size_t len, uint8_t ch_idx,
-                         uint8_t *out)
+size_t bt_whiten(const uint8_t *in, size_t len, uint8_t ch_idx, uint8_t *out)
 {
     size_t n;
     uint8_t lfsr = (uint8_t)(bt_swap_bits(ch_idx) | 0x02u);
@@ -367,7 +366,7 @@ static void parse_frames(ble_rx_port_t *rx)
 
             used_ch_idx = ch_idx_a;
             //解白化
-            bt_dewhiten(raw_in, BLE_PDU_HDR_LEN, used_ch_idx, hdr);
+            bt_whiten(raw_in, BLE_PDU_HDR_LEN, used_ch_idx, hdr);
         }
 
         pdu_type = (uint8_t)(hdr[0] & 0x0Fu);
@@ -377,7 +376,7 @@ static void parse_frames(ble_rx_port_t *rx)
         if ((!pdu_type_valid(pdu_type) || payload_len > 37u) &&
             ch_idx_b != ch_idx_a) {
             used_ch_idx = ch_idx_b;
-            bt_dewhiten(raw_in, BLE_PDU_HDR_LEN, used_ch_idx, hdr);
+            bt_whiten(raw_in, BLE_PDU_HDR_LEN, used_ch_idx, hdr);
             pdu_type = (uint8_t)(hdr[0] & 0x0Fu);
             payload_len = (uint8_t)(hdr[1] & 0x3Fu);
         }
@@ -471,7 +470,7 @@ static void parse_frames(ble_rx_port_t *rx)
                     consume_frame_buf(rx, pkt_start);
                 return;
             }
-            bt_dewhiten(raw_in, nbytes, used_ch_idx, dewhite);
+            bt_whiten(raw_in, nbytes, used_ch_idx, dewhite);
         }
         bt_crc24(dewhite, BLE_PDU_HDR_LEN + payload_len, crc_calc);
 

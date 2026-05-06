@@ -52,6 +52,7 @@
 #include "no_os_axi_io.h"
 #include "xtime_l.h"
 #include "ble.h"
+#include "ble_tx_adv.h"
 
 /******************************************************************************/
 /************************ Constants Definitions *******************************/
@@ -114,6 +115,7 @@ command cmd_list[] = {
 	{"debug_information?", "Gets debug information", "", debug_information},
 	{"dma_tx_demo?", "Sends data in dma", "", dma_tx_demo},
 	{"ble_tx_demo?", "Sends BLE data", "", ble_tx_demo},
+	{"ble_tx_adv_name?", "Generate and send BLE ADV name SDR_BLE", "", ble_tx_adv_name_demo},
 	{"ble_tx_stop?", "stop BLE TX demo, and set DDS", "", ble_tx_stop},
 	{"change_freq?", "change BLE TX chan to next freq", "", change_freq},
 	{"ble_rx_demo?", "Receive BLE packet", "", ble_rx_service_start},

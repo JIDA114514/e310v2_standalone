@@ -54,6 +54,10 @@ int ble_rx_port_init(ble_rx_port_t *rx, uint32_t sample_rate_hz,
 
 uint64_t ble_rx_channel_to_freq_hz(uint8_t ble_channel);
 
+uint8_t ble_channel_to_data_idx(uint8_t ch);
+
+size_t bt_whiten(const uint8_t *in, size_t len, uint8_t ch_idx, uint8_t *out);
+
 void ble_rx_port_reset(ble_rx_port_t *rx);
 
 void ble_rx_port_process_iq_i16(ble_rx_port_t *rx, const int16_t *iq,
