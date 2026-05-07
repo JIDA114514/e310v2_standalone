@@ -14,6 +14,7 @@
 #define BLE_MIN_FRAME_LEN (1u + 4u + BLE_PDU_HDR_LEN + 6u + BLE_CRC_LEN)
 
 static uint8_t bt_swap_bits(uint8_t v);
+static float fast_absf(float v);
 
 /*
  * Function: ble_sync_detect
@@ -129,6 +130,11 @@ static uint8_t bt_swap_bits(uint8_t v)
     v = (uint8_t)(((v & 0xCCu) >> 2) | ((v & 0x33u) << 2));
     v = (uint8_t)(((v & 0xAAu) >> 1) | ((v & 0x55u) << 1));
     return v;
+}
+
+static float fast_absf(float v)
+{
+    return (v < 0.0f) ? -v : v;
 }
 
 /*
@@ -427,9 +433,9 @@ static void parse_frames(ble_rx_port_t *rx)
 
                     rx->raw_sync_frames++;
                     rx->emitted_frames++;
-                    if (rx->on_packet)
+//                    if (rx->on_packet)
                     //此时包解析其实仍然失败了，只完成报头分析，输出以debug
-                        rx->on_packet(raw_in, nbytes, rx->on_packet_ctx);
+//                        rx->on_packet(raw_in, nbytes, rx->on_packet_ctx);
                     consume_frame_buf(rx, pkt_start + src_need_raw);
                     pos = 0;
                     continue;
@@ -550,6 +556,16 @@ int ble_rx_port_init(ble_rx_port_t *rx, uint32_t sample_rate_hz,
     rx->samples_per_symbol = (float)sample_rate_hz / (float)symbol_rate_hz;
     if (rx->samples_per_symbol < 1.0f)
         rx->samples_per_symbol = 1.0f;
+    rx->timing_offset = 0.0f;
+    rx->timing_mu = 0.00002f;
+    rx->gardner_early = 0.0f;
+    rx->gardner_mid = 0.0f;
+    rx->gardner_have_early = 0u;
+    rx->gardner_need_early = 1u;
+    rx->gardner_have_mid = 0u;
+    rx->gardner_prev_metric = 0.0f;
+    rx->gardner_prev_phase = 0.0f;
+    rx->gardner_prev_valid = 0u;
     rx->symbol_phase = 0u;
     rx->invert_metric = false;
     rx->on_packet = on_packet;
@@ -574,6 +590,15 @@ void ble_rx_port_reset(ble_rx_port_t *rx)
     rx->sample_count = 0;
     rx->phase_acc = 0.0f;
     rx->phase_acc = (float)rx->symbol_phase;
+    rx->timing_offset = 0.0f;
+    rx->gardner_early = 0.0f;
+    rx->gardner_mid = 0.0f;
+    rx->gardner_have_early = 0u;
+    rx->gardner_need_early = 1u;
+    rx->gardner_have_mid = 0u;
+    rx->gardner_prev_metric = 0.0f;
+    rx->gardner_prev_phase = 0.0f;
+    rx->gardner_prev_valid = 0u;
     rx->sym_metric_sum = 0.0f;
     rx->metric_acc = 0.0f;
     rx->sym_count = 0;
@@ -645,6 +670,119 @@ void ble_rx_port_process_iq_i16(ble_rx_port_t *rx, const int16_t *iq,
     }
 }
 
+void ble_rx_port_process_iq_i16_gardner(ble_rx_port_t *rx, const int16_t *iq,
+                                        size_t iq_pair_count)
+{
+    size_t k;
+    if (!rx || !iq)
+        return;
+
+    for (k = 0; k < iq_pair_count; k++) {
+        int16_t i = iq[2u * k + 0u];
+        int16_t q = iq[2u * k + 1u];
+        float metric;
+        uint8_t bit;
+
+        if (!rx->have_prev) {
+            rx->prev_i = i;
+            rx->prev_q = q;
+            rx->have_prev = true;
+            continue;
+        }
+
+        metric = (float)i * (float)rx->prev_q - (float)q * (float)rx->prev_i;
+        rx->prev_i = i;
+        rx->prev_q = q;
+
+        if (rx->invert_metric)
+            metric = -metric;
+
+        if (metric >= 0.0f)
+            rx->metric_acc += metric;
+        else
+            rx->metric_acc -= metric;
+
+        rx->sym_metric_sum += metric;
+        rx->phase_acc += 1.0f + rx->timing_offset;
+        rx->sample_count++;
+
+        if (rx->gardner_prev_valid) {
+            float sps = rx->samples_per_symbol;
+            float prev_phase = rx->gardner_prev_phase;
+            float curr_phase = rx->phase_acc;
+
+            if (rx->gardner_need_early && prev_phase <= 0.0f && curr_phase >= 0.0f) {
+                float t = (curr_phase == prev_phase) ? 0.0f : (0.0f - prev_phase) / (curr_phase - prev_phase);
+                rx->gardner_early = rx->gardner_prev_metric +
+                                    t * (metric - rx->gardner_prev_metric);
+                rx->gardner_need_early = 0u;
+                rx->gardner_have_early = 1u;
+            }
+
+            if (!rx->gardner_have_mid && prev_phase <= (sps * 0.5f) && curr_phase >= (sps * 0.5f)) {
+                float t = (curr_phase == prev_phase) ? 0.0f :
+                          ((sps * 0.5f) - prev_phase) / (curr_phase - prev_phase);
+                rx->gardner_mid = rx->gardner_prev_metric +
+                                  t * (metric - rx->gardner_prev_metric);
+                rx->gardner_have_mid = 1u;
+            }
+        }
+
+        if (rx->phase_acc >= rx->samples_per_symbol) {
+            float sps = rx->samples_per_symbol;
+            float late = metric;
+
+            if (rx->gardner_prev_valid) {
+                float prev_phase = rx->gardner_prev_phase;
+                float curr_phase = rx->phase_acc;
+                if (prev_phase <= sps && curr_phase >= sps) {
+                    float t = (curr_phase == prev_phase) ? 0.0f :
+                              (sps - prev_phase) / (curr_phase - prev_phase);
+                    late = rx->gardner_prev_metric +
+                           t * (metric - rx->gardner_prev_metric);
+                }
+            }
+
+            if (rx->gardner_have_mid && rx->gardner_have_early) {
+                float early = rx->gardner_early;
+                float mid = rx->gardner_mid;
+                float norm = fast_absf(mid) + fast_absf(early) + fast_absf(late);
+                float avg = (rx->sym_count ? (rx->metric_acc / (float)rx->sym_count) : 0.0f);
+                float thr = avg * 2.0f + 200.0f;
+                if (norm > thr) {
+                    float err = mid * (early - late);
+                    err /= (norm + 1.0f);
+                    rx->timing_offset += rx->timing_mu * err;
+                    if (rx->timing_offset > 0.1f)
+                        rx->timing_offset = 0.1f;
+                    if (rx->timing_offset < -0.1f)
+                        rx->timing_offset = -0.1f;
+                }
+            }
+
+            bit = (rx->sym_metric_sum >= 0.0f) ? 1u : 0u;
+            rx->phase_acc -= (float)rx->samples_per_symbol;
+            rx->bit_acc |= (uint8_t)(bit << rx->bit_count);
+            rx->bit_count++;
+            rx->sym_metric_sum = 0.0f;
+            rx->gardner_need_early = 1u;
+            rx->gardner_have_mid = 0u;
+            rx->gardner_have_early = 0u;
+
+            if (rx->bit_count == 8u) {
+                rx->sym_count += 8u;
+                append_byte_and_parse(rx, rx->bit_acc);
+                rx->bit_acc = 0u;
+                rx->bit_count = 0u;
+            }
+        }
+
+        rx->gardner_prev_metric = metric;
+        rx->gardner_prev_phase = rx->phase_acc;
+        rx->gardner_prev_valid = 1u;
+    }
+}
+
 /*
  * Function: ble_rx_port_process_iq_i16_strided
  * Purpose : Demodulate selected IQ lanes from multi-channel DMA layout.
@@ -674,7 +812,7 @@ void ble_rx_port_process_iq_i16_strided(ble_rx_port_t *rx,
     for (pos = 0; pos + stride_words <= sample_word_count; pos += stride_words) {
         pair[0] = samples[pos + i_index];
         pair[1] = samples[pos + q_index];
-        ble_rx_port_process_iq_i16(rx, pair, 1u);
+        ble_rx_port_process_iq_i16_gardner(rx, pair, 1u);
     }
 }
 
@@ -700,46 +838,6 @@ void ble_rx_port_default_printer(const uint8_t *ble_pdu, size_t len, void *ctx)
     for (i = 8u; i < len; i++)
         printf("%02X ", ble_pdu[i]);
     printf("\n");
-}
-
-/*
- * Function: ble_rx_port_dma_capture_and_process
- * Purpose : Capture one DMA block and process as contiguous IQ layout.
- * Params  : rx               - Receiver context.
- *           dma_capture      - Platform DMA capture callback.
- *           dma_ctx          - DMA callback context.
- *           adc_buf          - Destination buffer for samples.
- *           adc_bytes        - Capture bytes.
- *           timeout_ms       - DMA timeout.
- *           cache_invalidate - Optional cache invalidate callback.
- * Return  : 0 on success, negative on failure.
- */
-int ble_rx_port_dma_capture_and_process(
-    ble_rx_port_t *rx,
-    ble_dma_capture_fn_t dma_capture,
-    void *dma_ctx,
-    void *adc_buf,
-    uint32_t adc_bytes,
-    uint32_t timeout_ms,
-    void (*cache_invalidate)(uintptr_t addr, uint32_t bytes))
-{
-    int status;
-
-    if (!rx || !dma_capture || !adc_buf || adc_bytes == 0u)
-        return -1;
-
-    status = dma_capture(dma_ctx, adc_buf, adc_bytes, timeout_ms);
-    if (status < 0)
-        return status;
-    rx->dma_loops++;
-
-    if (cache_invalidate)
-        cache_invalidate((uintptr_t)adc_buf, adc_bytes);
-
-    ble_rx_port_process_iq_i16(rx, (const int16_t *)adc_buf,
-                               (size_t)adc_bytes / 4u);
-
-    return 0;
 }
 
 /*

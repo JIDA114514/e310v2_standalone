@@ -82,10 +82,6 @@ static int32_t round_float_to_int(float x)
     return (int32_t)(x >= 0.0f ? (x + 0.5f) : (x - 0.5f));
 }
 
-
-/*
-功能：预生成高斯滤波器系数
-*/
 static void init_ble_gfsk_taps(void)
 {
     if (ble_gfsk_taps_ready)
@@ -113,9 +109,6 @@ static void init_ble_gfsk_taps(void)
     ble_gfsk_taps_ready = 1u;
 }
 
-/*
-功能：预生成相位增量表
-*/
 static void init_ble_gfsk_phase_lut(void)
 {
     if (ble_gfsk_phase_lut_ready)

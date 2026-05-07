@@ -20,6 +20,16 @@ typedef struct {
     uint8_t symbol_phase;
 
     float samples_per_symbol;
+    float timing_offset;
+    float timing_mu;
+    float gardner_early;
+    float gardner_mid;
+    uint8_t gardner_have_early;
+    uint8_t gardner_need_early;
+    uint8_t gardner_have_mid;
+    float gardner_prev_metric;
+    float gardner_prev_phase;
+    uint8_t gardner_prev_valid;
     bool have_prev;
     int16_t prev_i;
     int16_t prev_q;
@@ -62,6 +72,9 @@ void ble_rx_port_reset(ble_rx_port_t *rx);
 
 void ble_rx_port_process_iq_i16(ble_rx_port_t *rx, const int16_t *iq,
                                 size_t iq_pair_count);
+
+void ble_rx_port_process_iq_i16_gardner(ble_rx_port_t *rx, const int16_t *iq,
+                                        size_t iq_pair_count);
 
 void ble_rx_port_process_iq_i16_strided(ble_rx_port_t *rx,
                                         const int16_t *samples,
