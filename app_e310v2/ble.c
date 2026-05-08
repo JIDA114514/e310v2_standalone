@@ -17,7 +17,8 @@
 #define BLE_CHANNEL (37u)
 #define BLE_DMA_STRIDE_WORDS (4u)
 #define BLE_STATUS_PRINT_PERIOD (100u)
-#define BLE_SYNC_REPORT_BYTES (64u)
+#define BLE_SYNC_REPORT_BYTES (32u)
+#define BLE_AUTO_SELECT_WORDS (32768u)
 #define BLE_HOP_INTERVAL_US (20000u)
 
 extern struct ad9361_rf_phy *ad9361_phy;
@@ -53,6 +54,10 @@ static uint8_t g_i_index = 0u;
 static uint8_t g_q_index = 1u;
 static bool g_invert_metric = false;
 static uint8_t g_symbol_phase = 0u;
+static uint8_t g_last_i_index = 0u;
+static uint8_t g_last_q_index = 1u;
+static bool g_last_invert_metric = false;
+static uint8_t g_last_symbol_phase = 0u;
 
 /*
  * Function: adv_pdu_name
@@ -383,6 +388,7 @@ static void auto_select_iq_combo(const int16_t *buf, size_t words)
     uint32_t p;
     uint8_t pair_id;
     uint8_t inv;
+    size_t used_words = words;
 
     best.i_index = 0u;
     best.q_index = 1u;
@@ -397,6 +403,9 @@ static void auto_select_iq_combo(const int16_t *buf, size_t words)
     if (sps == 0u)
         sps = 1u;
 
+    if (used_words > BLE_AUTO_SELECT_WORDS)
+        used_words = BLE_AUTO_SELECT_WORDS;
+
     for (pair_id = 0u; pair_id < 4u; pair_id++) {
         for (inv = 0u; inv < 2u; inv++) {
             for (p = 0u; p < sps; p++) {
@@ -406,10 +415,10 @@ static void auto_select_iq_combo(const int16_t *buf, size_t words)
                 uint32_t chits;
                 uint32_t crchits;
                 uint32_t score;
-                probe_combo(buf, words, pairs[pair_id][0], pairs[pair_id][1],
+                probe_combo(buf, used_words, pairs[pair_id][0], pairs[pair_id][1],
                             inv != 0u, (uint8_t)p, &phits, &ahits);
 
-                score = score_combo_parser(buf, words,
+                score = score_combo_parser(buf, used_words,
                                            pairs[pair_id][0], pairs[pair_id][1],
                                            inv != 0u, (uint8_t)p,
                                            &shits, &chits, &crchits);
@@ -431,6 +440,10 @@ static void auto_select_iq_combo(const int16_t *buf, size_t words)
     g_q_index = best.q_index;
     g_invert_metric = best.invert_metric;
     g_symbol_phase = best.symbol_phase;
+    g_last_i_index = g_i_index;
+    g_last_q_index = g_q_index;
+    g_last_invert_metric = g_invert_metric;
+    g_last_symbol_phase = g_symbol_phase;
 
     printf("auto_select: IQ=(%u,%u) invert=%u phase=%u probe=%" PRIu32
            " score=%" PRIu32 "\n",

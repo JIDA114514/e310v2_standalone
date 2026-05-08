@@ -1,5 +1,6 @@
 #include "ble_rx.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -135,6 +136,111 @@ static uint8_t bt_swap_bits(uint8_t v)
 static float fast_absf(float v)
 {
     return (v < 0.0f) ? -v : v;
+}
+
+static void ble_fir_iq_i16(ble_rx_port_t *rx, int16_t i, int16_t q,
+                           float *out_i, float *out_q)
+{
+    uint8_t t;
+    float acc_i = 0.0f;
+    float acc_q = 0.0f;
+
+    if (!rx || !out_i || !out_q) {
+        return;
+    }
+
+    rx->fir_state_i[rx->fir_index] = (float)i;
+    rx->fir_state_q[rx->fir_index] = (float)q;
+    rx->fir_index++;
+    if (rx->fir_index >= BLE_FIR_TAP_COUNT)
+        rx->fir_index = 0u;
+
+    for (t = 0u; t < BLE_FIR_TAP_COUNT; t++) {
+        uint8_t idx = (uint8_t)((rx->fir_index + BLE_FIR_TAP_COUNT - 1u - t) % BLE_FIR_TAP_COUNT);
+        acc_i += rx->fir_taps[t] * rx->fir_state_i[idx];
+        acc_q += rx->fir_taps[t] * rx->fir_state_q[idx];
+    }
+
+    *out_i = acc_i;
+    *out_q = acc_q;
+}
+
+static bool ble_decim_iq_i16(ble_rx_port_t *rx, int16_t i, int16_t q,
+                             int16_t *out_i, int16_t *out_q)
+{
+    uint8_t t;
+    float acc_i;
+    float acc_q;
+
+    float prev_i;
+    float prev_q;
+    float curr_i;
+    float curr_q;
+    float frac;
+
+    if (!rx || !out_i || !out_q)
+        return false;
+
+    curr_i = (float)i;
+    curr_q = (float)q;
+    rx->decim_lp_i += rx->decim_lp_alpha * (curr_i - rx->decim_lp_i);
+    rx->decim_lp_q += rx->decim_lp_alpha * (curr_q - rx->decim_lp_q);
+    curr_i = rx->decim_lp_i;
+    curr_q = rx->decim_lp_q;
+
+    rx->fir_state_i[rx->fir_index] = curr_i;
+    rx->fir_state_q[rx->fir_index] = curr_q;
+    rx->fir_index++;
+    if (rx->fir_index >= BLE_FIR_TAP_COUNT)
+        rx->fir_index = 0u;
+
+    rx->fir_decim_count++;
+    if (rx->fir_decim_count < 4u) {
+        return false;
+    }
+    rx->fir_decim_count = 0u;
+
+    acc_i = 0.0f;
+    acc_q = 0.0f;
+    for (t = 0u; t < BLE_FIR_TAP_COUNT; t++) {
+        uint8_t idx = (uint8_t)((rx->fir_index + BLE_FIR_TAP_COUNT - 1u - t) % BLE_FIR_TAP_COUNT);
+        acc_i += rx->fir_taps[t] * rx->fir_state_i[idx];
+        acc_q += rx->fir_taps[t] * rx->fir_state_q[idx];
+    }
+
+    curr_i = acc_i;
+    curr_q = acc_q;
+
+    if (!rx->decim_have_prev) {
+        rx->decim_prev_i = (int16_t)curr_i;
+        rx->decim_prev_q = (int16_t)curr_q;
+        rx->decim_have_prev = true;
+        rx->decim_phase = 0.0f;
+        return false;
+    }
+
+    prev_i = (float)rx->decim_prev_i;
+    prev_q = (float)rx->decim_prev_q;
+
+    rx->decim_phase += 1.0f;
+    if (rx->decim_phase >= rx->decim_step) {
+        float overshoot = rx->decim_phase - rx->decim_step;
+        rx->decim_phase = overshoot;
+        frac = 1.0f - overshoot;
+        if (frac < 0.0f)
+            frac = 0.0f;
+        if (frac > 1.0f)
+            frac = 1.0f;
+        *out_i = (int16_t)(prev_i + frac * (curr_i - prev_i));
+        *out_q = (int16_t)(prev_q + frac * (curr_q - prev_q));
+        rx->decim_prev_i = (int16_t)curr_i;
+        rx->decim_prev_q = (int16_t)curr_q;
+        return true;
+    }
+
+    rx->decim_prev_i = (int16_t)curr_i;
+    rx->decim_prev_q = (int16_t)curr_q;
+    return false;
 }
 
 /*
@@ -545,6 +651,7 @@ int ble_rx_port_init(ble_rx_port_t *rx, uint32_t sample_rate_hz,
                      bool strict_crc, ble_packet_handler_t on_packet,
                      void *on_packet_ctx)
 {
+    float decim_rate_hz = 4000000.0f;
     if (!rx || symbol_rate_hz == 0u || sample_rate_hz < symbol_rate_hz)
         return -1;
 
@@ -556,16 +663,40 @@ int ble_rx_port_init(ble_rx_port_t *rx, uint32_t sample_rate_hz,
     rx->samples_per_symbol = (float)sample_rate_hz / (float)symbol_rate_hz;
     if (rx->samples_per_symbol < 1.0f)
         rx->samples_per_symbol = 1.0f;
+    rx->samples_per_symbol_decim = decim_rate_hz / (float)symbol_rate_hz;
+    if (rx->samples_per_symbol_decim < 1.0f)
+        rx->samples_per_symbol_decim = 1.0f;
+    rx->decim_step = (float)sample_rate_hz / decim_rate_hz;
+    if (rx->decim_step < 1.0f)
+        rx->decim_step = 1.0f;
+    rx->decim_phase = 0.0f;
+    rx->decim_lp_alpha = 0.12f;
+    rx->decim_lp_i = 0.0f;
+    rx->decim_lp_q = 0.0f;
+    rx->decim_have_prev = false;
+    rx->decim_prev_i = 0;
+    rx->decim_prev_q = 0;
+    {
+        static const float taps[BLE_FIR_TAP_COUNT] = {
+            0.02f, 0.05f, 0.08f, 0.12f, 0.46f,
+            0.12f, 0.08f, 0.05f, 0.02f
+        };
+        memcpy(rx->fir_taps, taps, sizeof(taps));
+    }
+    memset(rx->fir_state_i, 0, sizeof(rx->fir_state_i));
+    memset(rx->fir_state_q, 0, sizeof(rx->fir_state_q));
+    rx->fir_index = 0u;
+    rx->fir_decim_count = 0u;
     rx->timing_offset = 0.0f;
-    rx->timing_mu = 0.00002f;
-    rx->gardner_early = 0.0f;
-    rx->gardner_mid = 0.0f;
-    rx->gardner_have_early = 0u;
-    rx->gardner_need_early = 1u;
-    rx->gardner_have_mid = 0u;
-    rx->gardner_prev_metric = 0.0f;
-    rx->gardner_prev_phase = 0.0f;
-    rx->gardner_prev_valid = 0u;
+    rx->timing_mu = 0.0001f;
+    rx->elg_early_sum = 0.0f;
+    rx->elg_late_sum = 0.0f;
+    rx->elg_err_sum = 0.0f;
+    rx->elg_err_idx = 0u;
+    rx->elg_err_count = 0u;
+    rx->elg_sample_count = 0u;
+    memset(rx->elg_err_hist, 0, sizeof(rx->elg_err_hist));
+    memset(rx->elg_samples, 0, sizeof(rx->elg_samples));
     rx->symbol_phase = 0u;
     rx->invert_metric = false;
     rx->on_packet = on_packet;
@@ -587,18 +718,46 @@ void ble_rx_port_reset(ble_rx_port_t *rx)
     rx->have_prev = false;
     rx->prev_i = 0;
     rx->prev_q = 0;
+    rx->prev_i_f = 0.0f;
+    rx->prev_q_f = 0.0f;
+    rx->prev_i_f = 0.0f;
+    rx->prev_q_f = 0.0f;
     rx->sample_count = 0;
     rx->phase_acc = 0.0f;
     rx->phase_acc = (float)rx->symbol_phase;
     rx->timing_offset = 0.0f;
-    rx->gardner_early = 0.0f;
-    rx->gardner_mid = 0.0f;
-    rx->gardner_have_early = 0u;
-    rx->gardner_need_early = 1u;
-    rx->gardner_have_mid = 0u;
-    rx->gardner_prev_metric = 0.0f;
-    rx->gardner_prev_phase = 0.0f;
-    rx->gardner_prev_valid = 0u;
+    rx->samples_per_symbol_decim = (rx->samples_per_symbol / (rx->decim_step > 0.0f ? rx->decim_step : 1.0f));
+    if (rx->samples_per_symbol_decim < 1.0f)
+        rx->samples_per_symbol_decim = 1.0f;
+    rx->decim_phase = 0.0f;
+    rx->decim_lp_i = 0.0f;
+    rx->decim_lp_q = 0.0f;
+    rx->decim_lp_alpha = 0.12f;
+    rx->decim_have_prev = false;
+    rx->decim_prev_i = 0;
+    rx->decim_prev_q = 0;
+    {
+        static const float taps[BLE_FIR_TAP_COUNT] = {
+            0.02f, 0.05f, 0.08f, 0.12f, 0.46f,
+            0.12f, 0.08f, 0.05f, 0.02f
+        };
+        memcpy(rx->fir_taps, taps, sizeof(taps));
+    }
+    memset(rx->fir_state_i, 0, sizeof(rx->fir_state_i));
+    memset(rx->fir_state_q, 0, sizeof(rx->fir_state_q));
+    rx->fir_index = 0u;
+    rx->fir_decim_count = 0u;
+    rx->elg_early_sum = 0.0f;
+    rx->elg_late_sum = 0.0f;
+    rx->elg_err_sum = 0.0f;
+    rx->elg_err_idx = 0u;
+    rx->elg_err_count = 0u;
+    rx->elg_sample_count = 0u;
+    rx->elg_early_sum = 0.0f;
+    rx->elg_late_sum = 0.0f;
+    rx->elg_err_sum = 0.0f;
+    memset(rx->elg_err_hist, 0, sizeof(rx->elg_err_hist));
+    memset(rx->elg_samples, 0, sizeof(rx->elg_samples));
     rx->sym_metric_sum = 0.0f;
     rx->metric_acc = 0.0f;
     rx->sym_count = 0;
@@ -682,17 +841,25 @@ void ble_rx_port_process_iq_i16_gardner(ble_rx_port_t *rx, const int16_t *iq,
         int16_t q = iq[2u * k + 1u];
         float metric;
         uint8_t bit;
+        float i_f;
+        float q_f;
+        float tmp_i;
+        float tmp_q;
+
+        ble_fir_iq_i16(rx, i, q, &i_f, &q_f);
+        tmp_i = i_f;
+        tmp_q = q_f;
 
         if (!rx->have_prev) {
-            rx->prev_i = i;
-            rx->prev_q = q;
+            rx->prev_i_f = tmp_i;
+            rx->prev_q_f = tmp_q;
             rx->have_prev = true;
             continue;
         }
 
-        metric = (float)i * (float)rx->prev_q - (float)q * (float)rx->prev_i;
-        rx->prev_i = i;
-        rx->prev_q = q;
+        metric = tmp_i * rx->prev_q_f - tmp_q * rx->prev_i_f;
+        rx->prev_i_f = tmp_i;
+        rx->prev_q_f = tmp_q;
 
         if (rx->invert_metric)
             metric = -metric;
@@ -703,71 +870,15 @@ void ble_rx_port_process_iq_i16_gardner(ble_rx_port_t *rx, const int16_t *iq,
             rx->metric_acc -= metric;
 
         rx->sym_metric_sum += metric;
-        rx->phase_acc += 1.0f + rx->timing_offset;
+        rx->phase_acc += 1.0f;
         rx->sample_count++;
 
-        if (rx->gardner_prev_valid) {
-            float sps = rx->samples_per_symbol;
-            float prev_phase = rx->gardner_prev_phase;
-            float curr_phase = rx->phase_acc;
-
-            if (rx->gardner_need_early && prev_phase <= 0.0f && curr_phase >= 0.0f) {
-                float t = (curr_phase == prev_phase) ? 0.0f : (0.0f - prev_phase) / (curr_phase - prev_phase);
-                rx->gardner_early = rx->gardner_prev_metric +
-                                    t * (metric - rx->gardner_prev_metric);
-                rx->gardner_need_early = 0u;
-                rx->gardner_have_early = 1u;
-            }
-
-            if (!rx->gardner_have_mid && prev_phase <= (sps * 0.5f) && curr_phase >= (sps * 0.5f)) {
-                float t = (curr_phase == prev_phase) ? 0.0f :
-                          ((sps * 0.5f) - prev_phase) / (curr_phase - prev_phase);
-                rx->gardner_mid = rx->gardner_prev_metric +
-                                  t * (metric - rx->gardner_prev_metric);
-                rx->gardner_have_mid = 1u;
-            }
-        }
-
         if (rx->phase_acc >= rx->samples_per_symbol) {
-            float sps = rx->samples_per_symbol;
-            float late = metric;
-
-            if (rx->gardner_prev_valid) {
-                float prev_phase = rx->gardner_prev_phase;
-                float curr_phase = rx->phase_acc;
-                if (prev_phase <= sps && curr_phase >= sps) {
-                    float t = (curr_phase == prev_phase) ? 0.0f :
-                              (sps - prev_phase) / (curr_phase - prev_phase);
-                    late = rx->gardner_prev_metric +
-                           t * (metric - rx->gardner_prev_metric);
-                }
-            }
-
-            if (rx->gardner_have_mid && rx->gardner_have_early) {
-                float early = rx->gardner_early;
-                float mid = rx->gardner_mid;
-                float norm = fast_absf(mid) + fast_absf(early) + fast_absf(late);
-                float avg = (rx->sym_count ? (rx->metric_acc / (float)rx->sym_count) : 0.0f);
-                float thr = avg * 2.0f + 200.0f;
-                if (norm > thr) {
-                    float err = mid * (early - late);
-                    err /= (norm + 1.0f);
-                    rx->timing_offset += rx->timing_mu * err;
-                    if (rx->timing_offset > 0.1f)
-                        rx->timing_offset = 0.1f;
-                    if (rx->timing_offset < -0.1f)
-                        rx->timing_offset = -0.1f;
-                }
-            }
-
             bit = (rx->sym_metric_sum >= 0.0f) ? 1u : 0u;
             rx->phase_acc -= (float)rx->samples_per_symbol;
             rx->bit_acc |= (uint8_t)(bit << rx->bit_count);
             rx->bit_count++;
             rx->sym_metric_sum = 0.0f;
-            rx->gardner_need_early = 1u;
-            rx->gardner_have_mid = 0u;
-            rx->gardner_have_early = 0u;
 
             if (rx->bit_count == 8u) {
                 rx->sym_count += 8u;
@@ -777,9 +888,6 @@ void ble_rx_port_process_iq_i16_gardner(ble_rx_port_t *rx, const int16_t *iq,
             }
         }
 
-        rx->gardner_prev_metric = metric;
-        rx->gardner_prev_phase = rx->phase_acc;
-        rx->gardner_prev_valid = 1u;
     }
 }
 

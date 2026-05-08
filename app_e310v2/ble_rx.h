@@ -5,6 +5,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define BLE_ELG_MAX_SAMPLES 64u
+#define BLE_FIR_TAP_COUNT 9u
+
 typedef void (*ble_packet_handler_t)(const uint8_t *ble_pdu, size_t len,
                                      void *ctx);
 
@@ -20,19 +23,36 @@ typedef struct {
     uint8_t symbol_phase;
 
     float samples_per_symbol;
+    float samples_per_symbol_decim;
+    float decim_step;
+    float decim_phase;
+    float decim_lp_i;
+    float decim_lp_q;
+    float decim_lp_alpha;
+    int16_t decim_prev_i;
+    int16_t decim_prev_q;
+    bool decim_have_prev;
+
+    float fir_taps[BLE_FIR_TAP_COUNT];
+    float fir_state_i[BLE_FIR_TAP_COUNT];
+    float fir_state_q[BLE_FIR_TAP_COUNT];
+    uint8_t fir_index;
+    uint8_t fir_decim_count;
     float timing_offset;
     float timing_mu;
-    float gardner_early;
-    float gardner_mid;
-    uint8_t gardner_have_early;
-    uint8_t gardner_need_early;
-    uint8_t gardner_have_mid;
-    float gardner_prev_metric;
-    float gardner_prev_phase;
-    uint8_t gardner_prev_valid;
+    float elg_early_sum;
+    float elg_late_sum;
+    float elg_err_sum;
+    float elg_err_hist[8];
+    float elg_samples[BLE_ELG_MAX_SAMPLES];
+    uint8_t elg_sample_count;
+    uint8_t elg_err_idx;
+    uint8_t elg_err_count;
     bool have_prev;
     int16_t prev_i;
     int16_t prev_q;
+    float prev_i_f;
+    float prev_q_f;
     uint32_t sample_count;
     float phase_acc;
     float sym_metric_sum;
