@@ -25,7 +25,7 @@ extern void Xil_DCacheFlushRange(uintptr_t adr, uint32_t len);
 #define BLE_MAX_SAMPLE_WORDS (16000u)
 #define BLE_GFSK_SPS_HIGH (768u)
 #define BLE_GFSK_DECIM (25u)
-#define BLE_GFSK_SPAN (4u)
+#define BLE_GFSK_SPAN (3u)
 #define BLE_GFSK_BT (0.5f)
 #define BLE_GFSK_TAPS (BLE_GFSK_SPAN * BLE_GFSK_SPS_HIGH)
 #define BLE_GFSK_LUT_PHASES (BLE_GFSK_SPS_HIGH)
