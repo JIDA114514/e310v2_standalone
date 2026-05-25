@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # coding=utf-8
 
+import argparse
 import math
 import matplotlib.pyplot as plt
 
@@ -25,19 +26,35 @@ CHIP_MAP = [
 ]
 
 
+def parse_meta_line(line):
+    if not line.startswith("#"):
+        return None, None
+    content = line[1:].strip()
+    if ":" not in content:
+        return None, None
+    key, value = content.split(":", 1)
+    return key.strip(), value.strip()
+
+
 def read_iq(path):
     i_list = []
     q_list = []
+    meta = {}
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
+            if line.startswith("#"):
+                key, value = parse_meta_line(line)
+                if key:
+                    meta[key] = value
+                continue
             parts = line.strip().split()
             if len(parts) != 2:
                 continue
             i_list.append(float(parts[0]))
             q_list.append(float(parts[1]))
     if not i_list:
-        raise ValueError("no samples in zigbee_iq.txt")
-    return i_list, q_list
+        raise ValueError(f"no samples in {path}")
+    return i_list, q_list, meta
 
 
 def half_sine_pulse(samples_per_chip):
@@ -69,6 +86,44 @@ def despread(i_list, q_list, samples_per_chip=8):
     for i, q in zip(i_chips, q_chips):
         chips.append(str(i))
         chips.append(str(q))
+    return "".join(chips)
+
+
+def ble_gfsk_to_bits(i_list, q_list, sample_rate, sps):
+    phases = []
+    for i_val, q_val in zip(i_list, q_list):
+        phases.append(math.atan2(q_val, i_val))
+
+    two_pi = 2.0 * math.pi
+    dphi = []
+    for idx in range(1, len(phases)):
+        delta = phases[idx] - phases[idx - 1]
+        delta = (delta + math.pi) % (2.0 * math.pi) - math.pi
+        dphi.append(delta)
+    if dphi:
+        dphi.append(dphi[-1])
+
+    freq_inst = [d * sample_rate / two_pi for d in dphi]
+    if sps <= 0:
+        raise ValueError("ble sps must be positive")
+
+    bit_count = len(freq_inst) // sps
+    bits = []
+    for k in range(bit_count):
+        s = k * sps
+        e = s + sps
+        avg = sum(freq_inst[s:e]) / sps
+        bits.append(1 if avg >= 0 else 0)
+    return bits
+
+
+def ble_bits_to_chips(bits):
+    chips = []
+    for b in bits:
+        if b == 1:
+            chips.append("11")
+        else:
+            chips.append("00")
     return "".join(chips)
 
 
@@ -122,19 +177,90 @@ def plot_constellation(i_list, q_list, samples_per_chip=8, samples=2000):
 
 
 def main():
-    i_list, q_list = read_iq("zigbee_iq.txt")
-    plot_iq(i_list, q_list)
-    plot_constellation(i_list, q_list)
+    parser = argparse.ArgumentParser(
+        description="Analyze ZigBee IQ and attempt DSSS decode"
+    )
+    parser.add_argument(
+        "input_iq",
+        nargs="?",
+        default="iq_data.txt",
+        help="input IQ txt file",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["auto", "oqpsk", "ble"],
+        default="auto",
+        help="analysis mode",
+    )
+    parser.add_argument(
+        "--sample-rate",
+        type=float,
+        default=None,
+        help="IQ sample rate in Hz (overrides file meta)",
+    )
+    parser.add_argument(
+        "--samples-per-chip",
+        type=int,
+        default=8,
+        help="samples per ZigBee chip (OQPSK mode)",
+    )
+    parser.add_argument(
+        "--ble-sps",
+        type=int,
+        default=None,
+        help="BLE samples per bit (overrides file meta)",
+    )
+    parser.add_argument(
+        "--chips-out",
+        default="zigbee_chips_out.txt",
+        help="output file for recovered chip sequence",
+    )
+    args = parser.parse_args()
 
-    chips = despread(i_list, q_list, samples_per_chip=8)
-    symbols = chips_to_symbols(chips)
-    bits = symbols_to_bits(symbols)
+    i_list, q_list, meta = read_iq(args.input_iq)
+    plot_iq(i_list, q_list)
+
+    mode = args.mode
+    if mode == "auto":
+        modulation = meta.get("modulation", "").lower()
+        if modulation == "gfsk":
+            mode = "ble"
+        else:
+            mode = "oqpsk"
+
+    if mode == "ble":
+        sample_rate = args.sample_rate
+        if sample_rate is None and "sample_rate_hz" in meta:
+            sample_rate = float(meta["sample_rate_hz"])
+        if sample_rate is None:
+            raise ValueError("sample_rate is required for BLE mode")
+
+        ble_sps = args.ble_sps
+        if ble_sps is None and "sps" in meta:
+            ble_sps = int(float(meta["sps"]))
+        if ble_sps is None:
+            raise ValueError("ble_sps is required for BLE mode")
+
+        bits = ble_gfsk_to_bits(i_list, q_list, sample_rate, ble_sps)
+        chips = ble_bits_to_chips(bits)
+        plot_constellation(i_list, q_list, samples_per_chip=max(1, args.samples_per_chip))
+    else:
+        plot_constellation(i_list, q_list, samples_per_chip=args.samples_per_chip)
+        chips = despread(i_list, q_list, samples_per_chip=args.samples_per_chip)
+
+    symbols = chips_to_symbols(chips) if chips else []
+    bits_out = symbols_to_bits(symbols) if symbols else ""
+    with open(args.chips_out, "w", encoding="utf-8") as f:
+        f.write(chips)
+
     print(f"samples: {len(i_list)}")
     print(f"chips: {len(chips)}")
+    print("chip sequence:")
+    print(chips)
     print(f"symbols: {len(symbols)}")
-    print(f"bits: {len(bits)}")
+    print(f"bits: {len(bits_out)}")
     print("decoded bits (first 128):")
-    print(bits[:128])
+    print(bits_out[:128])
 
     plt.show()
 

@@ -104,7 +104,7 @@ def write_iq(path, i_wave, q_wave):
 
 
 def main():
-    bit_str = read_bits("data_bit.txt")
+    bit_str = read_bits("data_bits.txt")
     ble_map = build_ble_chip_map()
     write_ble_map("zigbee_chip_map_ble.txt", ble_map)
     chip_bits = bits_to_chips_ble(bit_str, ble_map)
