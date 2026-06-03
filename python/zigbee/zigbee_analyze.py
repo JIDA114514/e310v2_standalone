@@ -25,6 +25,10 @@ CHIP_MAP = [
     "11001001011000000111011110111000",  # 0xF
 ]
 
+PREAMBLE_BYTES = 4
+SFD = 0xA7
+BIT_ORDER = "lsb"
+
 
 def parse_meta_line(line):
     if not line.startswith("#"):
@@ -147,6 +151,93 @@ def symbols_to_bits(symbols):
     return "".join(f"{s:04b}" for s in symbols)
 
 
+def bits_to_bytes(bit_str, bit_order=BIT_ORDER):
+    if len(bit_str) % 8 != 0:
+        bit_str = bit_str[: len(bit_str) - (len(bit_str) % 8)]
+    data = []
+    for i in range(0, len(bit_str), 8):
+        chunk = bit_str[i : i + 8]
+        value = 0
+        if bit_order == "lsb":
+            for idx, ch in enumerate(chunk):
+                if ch == "1":
+                    value |= 1 << idx
+        else:
+            for ch in chunk:
+                value = (value << 1) | (1 if ch == "1" else 0)
+        data.append(value)
+    return data
+
+
+def bytes_to_bits(data, bit_order=BIT_ORDER):
+    bits = []
+    for value in data:
+        if bit_order == "lsb":
+            for idx in range(8):
+                bits.append("1" if (value >> idx) & 1 else "0")
+        else:
+            for idx in range(7, -1, -1):
+                bits.append("1" if (value >> idx) & 1 else "0")
+    return "".join(bits)
+
+
+def crc16_ccitt(data, init=0x0000):
+    crc = init
+    for value in data:
+        crc ^= value
+        for _ in range(8):
+            if crc & 1:
+                crc = (crc >> 1) ^ 0x8408
+            else:
+                crc >>= 1
+    return crc & 0xFFFF
+
+
+def find_frame_bytes(bit_str):
+    data = bits_to_bytes(bit_str, bit_order=BIT_ORDER)
+    if len(data) < PREAMBLE_BYTES + 2:
+        return None
+    preamble = [0x00] * PREAMBLE_BYTES
+    for i in range(0, len(data) - (PREAMBLE_BYTES + 2) + 1):
+        if data[i : i + PREAMBLE_BYTES] != preamble:
+            continue
+        if data[i + PREAMBLE_BYTES] != SFD:
+            continue
+        length = data[i + PREAMBLE_BYTES + 1]
+        total = PREAMBLE_BYTES + 2 + length
+        end = i + total
+        if end <= len(data):
+            frame = data[i:end]
+            return {
+                "start": i,
+                "length": length,
+                "frame": frame,
+            }
+    return None
+
+
+def parse_phy_frame(frame_bytes):
+    if len(frame_bytes) < PREAMBLE_BYTES + 2:
+        raise ValueError("frame too short for PHY header")
+    length = frame_bytes[PREAMBLE_BYTES + 1]
+    expected = PREAMBLE_BYTES + 2 + length
+    if len(frame_bytes) < expected:
+        raise ValueError("incomplete frame")
+    payload = frame_bytes[PREAMBLE_BYTES + 2 : PREAMBLE_BYTES + 2 + length]
+    if len(payload) < 2:
+        raise ValueError("MAC payload too short for FCS")
+    mac_payload = payload[:-2]
+    fcs_rx = payload[-2] | (payload[-1] << 8)
+    fcs_calc = crc16_ccitt(mac_payload)
+    return {
+        "length": length,
+        "payload": mac_payload,
+        "fcs_rx": fcs_rx,
+        "fcs_calc": fcs_calc,
+        "fcs_ok": fcs_rx == fcs_calc,
+    }
+
+
 def plot_iq(i_list, q_list, samples=2000):
     n = min(samples, len(i_list))
     t = list(range(n))
@@ -183,7 +274,7 @@ def main():
     parser.add_argument(
         "input_iq",
         nargs="?",
-        default="iq_data.txt",
+        default="zigbee_iq.txt",
         help="input IQ txt file",
     )
     parser.add_argument(
@@ -261,6 +352,18 @@ def main():
     print(f"bits: {len(bits_out)}")
     print("decoded bits (first 128):")
     print(bits_out[:128])
+
+    frame_info = find_frame_bytes(bits_out)
+    if frame_info:
+        phy = parse_phy_frame(frame_info["frame"])
+        payload_bits = bytes_to_bits(phy["payload"], bit_order=BIT_ORDER)
+        print("zigbee phy frame:")
+        print(f"  start_byte: {frame_info['start']}")
+        print(f"  length: {phy['length']}")
+        print(f"  fcs_ok: {phy['fcs_ok']}")
+        print(f"  payload_bits_len: {len(payload_bits)}")
+    else:
+        print("zigbee phy frame: not found")
 
     plt.show()
 
