@@ -154,9 +154,12 @@ def find_access_address_bits(bits, pattern):
     return -1
 
 
-def parse_adv_payload(adv_payload):
+def parse_adv_payload(adv_payload, adv_payload_wt=None):
     adva = adv_payload[:6]
     adv_data = adv_payload[6:]
+    adv_data_wt = None
+    if adv_payload_wt is not None:
+        adv_data_wt = adv_payload_wt[6:]
     print("advA:", "".join(f"{b:02X}" for b in reversed(adva)))
     idx = 0
     while idx < len(adv_data):
@@ -168,6 +171,12 @@ def parse_adv_payload(adv_payload):
         ad_type = adv_data[idx + 1]
         ad_value = adv_data[idx + 2 : idx + 1 + length]
         print(f"AD type 0x{ad_type:02X}: {bytes(ad_value).hex()}")
+        if ad_type == 0x09 and adv_data_wt is not None:
+            wt_end = idx + 1 + length
+            if wt_end <= len(adv_data_wt):
+                ad_value_wt = adv_data_wt[idx + 2 : wt_end]
+                print(f"  name_wt: {bytes(ad_value_wt).hex()}")
+                print(f"  name_clr: {bytes(ad_value).hex()}")
         if ad_type == 0xFF and len(ad_value) >= 2:
             company_id = ad_value[0] | (ad_value[1] << 8)
             mfg_payload = ad_value[2:]
@@ -206,6 +215,7 @@ def try_decode(bits, channel, pattern_bits):
         }
     pdu = bt_dewhitening(pdu_wt, channel)
     payload = pdu[2 : 2 + pdu_len]
+    payload_wt = pdu_wt[2 : 2 + pdu_len]
     crc = pdu[-3:]
     calc_crc = bt_crc(pdu, 2 + pdu_len)
     crc_ok = crc == calc_crc
@@ -231,6 +241,7 @@ def try_decode(bits, channel, pattern_bits):
         "status": status,
         "header": header,
         "payload": payload,
+        "payload_wt": payload_wt,
         "start_bit": start_bit,
         "pdu_len": pdu_len,
         "crc": crc,
@@ -375,8 +386,11 @@ def main():
             print(f"total_bits: {best.get('total_bits')}")
             print(f"head_bit: {best.get('head_bit')}")
     if payload is not None:
+        payload_wt = best.get("payload_wt")
+        if payload_wt is not None:
+            print("payload_wt:", bytes(payload_wt).hex())
         print("payload:", bytes(payload).hex())
-        parse_adv_payload(payload)
+        parse_adv_payload(payload, payload_wt)
     if best.get("status") == "crc_mismatch":
         print("CRC mismatch")
         print("crc:", bytes(best.get("crc", [])).hex())
