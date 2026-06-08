@@ -3,6 +3,9 @@
 
 import argparse
 import math
+import sys
+
+sys.path.append('../')
 
 import ble_analyze
 
@@ -506,7 +509,7 @@ def main():
     parser.add_argument(
         "input_iq",
         nargs="?",
-        default="iq_data.txt",
+        default="../std_zigbee/zigbee_iq.txt",
         help="input IQ txt file",
     )
     parser.add_argument(

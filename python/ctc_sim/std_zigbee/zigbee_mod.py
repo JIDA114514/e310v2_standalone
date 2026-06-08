@@ -2,7 +2,9 @@
 # coding=utf-8
 
 import math
+import sys
 
+sys.path.append('../')
 
 CHIP_MAP = [
     "11011001110000110101001000101110",  # 0x0
@@ -139,7 +141,7 @@ def write_iq(path, i_wave, q_wave):
 
 
 def main():
-    bit_str = read_bits("data_bits.txt")
+    bit_str = read_bits("../data_bits.txt")
     frame_bits = build_phy_frame(bit_str)
     chip_bits = bits_to_chips(frame_bits)
     i_wave, q_wave = oqpsk_modulate(chip_bits, samples_per_chip=8)

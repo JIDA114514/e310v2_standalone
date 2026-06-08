@@ -1,5 +1,16 @@
 # python脚本说明
 
+python脚本用于验证相关算法的正确性，具体内容简介如下：
+
+- ctc_sim：该文件夹下为CTC算法的模拟
+  - bluebee：通过BLE调制zigbee信息，核心是构造特定负载，脚本zigbee_mod_ble.py用于生成负载的映射表
+  - patternbee：在BLE侧利用zigbee符号的模式特征来解调zigbee信号，脚本dual_analyze.py集成了正常zigbee信号分析和利用patternbee分析zigbee符号的功能
+  - ble_analyze.py：标准的分析BLE信号脚本，数据源为IQ基带信号
+  - generate_ble_iq_from_bits_txt.py：将指定内容调制为BLE信号，目前固定调制在广播信道上
+- std_ble：该文件下为标准BLE物理层的部分实现
+  - ble_rx及相关脚本通过gnuradio库控制hackrf实现BLE广播数据检测
+  - generate_ble_iq_30_72M.py生成BLE包IQ波形
+
 使用的脚本参考了：[auto_test_tool](https://github.com/nbtool/auto_test_tool/tree/master)中的BLE相关内容。
 
 generate_ble_iq_30_72M.py用于生成BLE广播包响相应的IQ数据波形，可以生成37,38,39信道上的BLE广播信号波形，该波形对应的采样率为ad9363上tx链路常用的30.72MHz。数组格式为C语言风格，且为了适配dma双通道的格式，每个数据会重复两次，高16位为Q路数据，低16位为I路数据，通过替换axi_dac_core.c中的数组来使用其他生成的数据，对应command.c中的外部变量声明也要做相应修改。
