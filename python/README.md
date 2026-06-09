@@ -7,6 +7,7 @@ python脚本用于验证相关算法的正确性，具体内容简介如下：
   - patternbee：在BLE侧利用zigbee符号的模式特征来解调zigbee信号，脚本dual_analyze.py集成了正常zigbee信号分析和利用patternbee分析zigbee符号的功能
   - ble_analyze.py：标准的分析BLE信号脚本，数据源为IQ基带信号
   - generate_ble_iq_from_bits_txt.py：将指定内容调制为BLE信号，目前固定调制在广播信道上
+  - std_zigbee：将名为data_bits.txt的原始二进制字符调制为标准zigbee符号，并分析。
 - std_ble：该文件下为标准BLE物理层的部分实现
   - ble_rx及相关脚本通过gnuradio库控制hackrf实现BLE广播数据检测
   - generate_ble_iq_30_72M.py生成BLE包IQ波形

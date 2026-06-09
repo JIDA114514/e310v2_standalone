@@ -53,6 +53,7 @@
 #include "xtime_l.h"
 #include "ble.h"
 #include "ble_tx_adv.h"
+#include "zigbee_tx.h"
 
 /******************************************************************************/
 /************************ Constants Definitions *******************************/
@@ -114,7 +115,7 @@ command cmd_list[] = {
 	{"dds_tx2_tone2_scale=", "Sets the DDS TX2 Tone 2 scale.", "", set_dds_tx2_tone2_scale},
 	{"debug_information?", "Gets debug information", "", debug_information},
 	{"dma_tx_demo?", "Sends data in dma", "", dma_tx_demo},
-	{"ble_tx_demo?", "Sends BLE data", "", ble_tx_demo},
+	{"ble_tx_demo?", "Sends BLE data in dma", "", ble_tx_demo},
 	{"ble_tx_adv_name?", "Generate and send BLE ADV name SDR_BLE", "", ble_tx_adv_name_demo},
 	{"ble_tx_stop?", "stop BLE TX demo, and set DDS", "", ble_tx_stop},
 	{"change_freq?", "change BLE TX chan to next freq", "", change_freq},
@@ -134,7 +135,7 @@ extern const uint32_t custom_iq_lut[768 * 2] __attribute__((aligned));
 // extern const uint32_t neg_custom_iq_lut[768 * 2];
 extern const uint32_t ble_iq_ch37[13764] __attribute__((aligned));
 extern const uint32_t ble_iq_ch38[13764] __attribute__((aligned));
-extern const uint32_t ble_iq_ch39[13764] __attribute__((aligned));
+extern const uint32_t ble_iq_ch39[13272] __attribute__((aligned));
 static struct axi_dma_transfer transfer = {
 	// Number of bytes to write/read; double because of 2T2R mode
 	.size = sizeof(custom_iq_lut),
@@ -151,9 +152,10 @@ static uint8_t is_ble_tx_active = 0;
 static uint8_t current_channel = 0;
 static XTime last_hop_time = 0;
 #define HOP_INTERVAL_TICKS (COUNTS_PER_SECOND / 50)
-#define LO_FREQ_CH37 (2402000000)
-#define LO_FREQ_CH38 (2426000000)
-#define LO_FREQ_CH39 (2480000000)
+#define LO_FREQ_CH37 			(2402000000)
+#define LO_FREQ_CH38 			(2426000000)
+#define LO_FREQ_CH39 			(2480000000)
+#define ZIGBEE_CHANNEL_11		(2405000000)
 static const char *datasel_to_str(enum axi_dac_data_sel s)
 {
 	switch (s)
@@ -230,15 +232,23 @@ void debug_information(double *param, char param_no)
 void dma_tx_demo(double *param, char param_no)
 {
     axi_dac_set_datasel(ad9361_phy->tx_dac, -1, AXI_DAC_DATA_SEL_DMA);
+    no_os_gpio_set_value(ad9361_phy->gpio_desc_tx1_ctrl_h, 0);
+    no_os_gpio_set_value(ad9361_phy->gpio_desc_tx1_ctrl_l, 1);
+    no_os_gpio_set_value(ad9361_phy->gpio_desc_tx2_ctrl_h, 0);
+    no_os_gpio_set_value(ad9361_phy->gpio_desc_tx2_ctrl_l, 1);
+    ad9361_set_tx_rf_port_output(ad9361_phy, TXB);
+//    ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH39);
+    ad9361_set_tx_lo_freq(ad9361_phy, ZIGBEE_CHANNEL_11);
 	printf("dma data loaded!\n");
 	Xil_DCacheFlush();
 	/* Flush cache data. */
-	Xil_DCacheInvalidateRange((uintptr_t)custom_iq_lut, sizeof(custom_iq_lut));
+//	Xil_DCacheInvalidateRange((uintptr_t)ble_iq_ch39, sizeof(ble_iq_ch39));
+	Xil_DCacheFlushRange((uintptr_t)zigbee_iq, sizeof(zigbee_iq));
 	/* Transfer the data. */
 	axi_dac_write(ad9361_phy->tx_dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
 	transfer.cyclic = CYCLIC;
-	transfer.size = sizeof(custom_iq_lut);
-	transfer.src_addr = (uintptr_t)custom_iq_lut;
+	transfer.size = sizeof(zigbee_iq);
+	transfer.src_addr = (uintptr_t)zigbee_iq;
 	int ret = axi_dmac_transfer_start(tx_dmac, &transfer);
 	if (ret == 0)
 		printf("start transfer!\n");
