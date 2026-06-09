@@ -45,7 +45,7 @@ class gr_zigbee(gr.top_block):
         self.demod_delay = demod_delay = demod_sps // 2
         # keep 1 out of every (2 * sps), starting at offset sps + sps//2
         self.demod_keep_n = demod_keep_n = demod_sps
-        self.demod_keep_offset = demod_keep_offset = (demod_sps + demod_delay - 1) % demod_sps
+        self.demod_keep_offset = demod_keep_offset = 0  # 0-4, tune for best symbol dist
 
         # Half-sine pulse for OQPSK matched filter
         self.pulse_taps = pulse_taps = [
@@ -56,7 +56,7 @@ class gr_zigbee(gr.top_block):
         # Blocks
         ##################################################
 
-        self.zeromq_pub_sink = zeromq.pub_sink(gr.sizeof_char, 1, 'tcp://127.0.0.1:55556', 100, False, (-1), '', True, True)
+        self.zeromq_pub_sink = zeromq.pub_sink(gr.sizeof_char, 1, 'tcp://127.0.0.1:55556', 100, False, (20), '', True, True)
         self.unpacked_to_packed = blocks.unpacked_to_packed_bb(1, gr.GR_LSB_FIRST)
 
         self.rtlsdr_source_0 = osmosdr.source(
@@ -76,9 +76,7 @@ class gr_zigbee(gr.top_block):
         self.rtlsdr_source_0.set_bandwidth(0, 0)
 
         self.freq_xlating_fir_filter_lp = filter.freq_xlating_fir_filter_ccc(1, lowpass_filter, (-freq_offset), sample_rate)
-        self.analog_simple_squelch = analog.simple_squelch_cc(squelch_threshold, 0.001)
 
-        # Costas loop for phase synchronization
         self.costas_loop = digital.costas_loop_cc(0.02, 4, False)
 
         # Split I/Q
@@ -106,12 +104,6 @@ class gr_zigbee(gr.top_block):
         # Connections
         ##################################################
         self.connect((self.rtlsdr_source_0, 0), (self.freq_xlating_fir_filter_lp, 0))
-        # Squelch kept but bypassed (output to null sink for now)
-        self.connect((self.freq_xlating_fir_filter_lp, 0), (self.analog_simple_squelch, 0))
-        self.squelch_null = blocks.null_sink(gr.sizeof_gr_complex)
-        self.connect((self.analog_simple_squelch, 0), (self.squelch_null, 0))
-
-        # Bypass squelch: connect filter → costas → I/Q split
         self.connect((self.freq_xlating_fir_filter_lp, 0), (self.costas_loop, 0))
         self.connect((self.costas_loop, 0), (self.complex_to_real, 0))
         self.connect((self.costas_loop, 0), (self.complex_to_imag, 0))
