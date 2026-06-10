@@ -7,7 +7,9 @@ python脚本用于验证相关算法的正确性，具体内容简介如下：
   - patternbee：在BLE侧利用zigbee符号的模式特征来解调zigbee信号，脚本dual_analyze.py集成了正常zigbee信号分析和利用patternbee分析zigbee符号的功能
   - ble_analyze.py：标准的分析BLE信号脚本，数据源为IQ基带信号
   - generate_ble_iq_from_bits_txt.py：将指定内容调制为BLE信号，目前固定调制在广播信道上
-  - std_zigbee：将名为data_bits.txt的原始二进制字符调制为标准zigbee符号，并分析。
+  - std_zigbee：zigbee_mod将名为data_bits.txt的原始二进制字符调制为标准zigbee符号，由zigbee_analyze分析。
+    - zigbee_rx可以控制hackrf等SDR实时接受并分析zigbee信号
+    - generate_zigbee_iq_30_71M能够生成给e310使用的dma数据，使其能够发射zigbee信号
 - std_ble：该文件下为标准BLE物理层的部分实现
   - ble_rx及相关脚本通过gnuradio库控制hackrf实现BLE广播数据检测
   - generate_ble_iq_30_72M.py生成BLE包IQ波形
@@ -158,7 +160,7 @@ def bt_dewhitening(data, channel):
     return ret
 ```
 
-## 调制方法
+## BLE调制方法
 
 ### GFSK流程
 
@@ -263,3 +265,253 @@ $$
   - 2.频谱效率与功率效率的平衡：频偏太小导致信号能量太集中，接收机不好从噪声中分离信号；频偏太大会占用更宽的频谱干扰其他信道。
 
 接收端的设计借用了gnuradio自带的GFSK Demod,仅需将经过低通滤波处理的数据通过该模块处理，再模拟物理端的白化和CRC检查即可。帧分析在app_frame.py中实现
+
+## ZigBee数据包结构与调制方法
+
+本仓库中的 `ctc_sim/std_zigbee` 主要用于生成和接收标准 IEEE 802.15.4 2.4GHz ZigBee PHY 信号。ZigBee 2.4GHz 物理层采用 DSSS + O-QPSK 调制，数据速率为250kbps，chip速率为2Mchip/s。
+
+### ZigBee 2.4GHz信道
+
+ZigBee 2.4GHz共有16个信道，编号为11到26，信道间隔为5MHz。代码中默认使用11信道：
+
+$$
+f_c = 2405MHz + 5MHz \times (channel - 11)
+$$
+
+对应 `gr_zigbee.py` 中的参数：
+
+```python
+self.zigbee_channel = 11
+self.zigbee_base_freq = 2405e6
+self.zigbee_channel_spacing = 5e6
+self.freq = zigbee_base_freq + (zigbee_channel_spacing * (zigbee_channel - 11))
+```
+
+### PHY帧结构
+
+标准802.15.4 PHY帧结构为：
+
+前导码(Preamble) $\rightarrow$ SFD $\rightarrow$ PHR(length) $\rightarrow$ MAC payload $\rightarrow$ FCS
+
+本代码中使用的帧格式为：
+
+```text
+0x00 0x00 0x00 0x00 | 0xA7 | length | payload | FCS_L | FCS_H
+```
+
+- 前导码：4字节 `0x00`，用于同步和帧起始检测。
+- SFD：固定为 `0xA7`，用于标记前导码结束。
+- length：MAC payload和FCS的总长度，代码中为 `len(payload) + 2`。
+- FCS：使用CRC16，低字节在前。
+
+CRC计算在 `zigbee_mod.py` 和 `zigbee_rx.py` 中使用同一套 LSB-first CRC16：
+
+```python
+def crc16_ccitt(data, init=0x0000):
+    crc = init
+    for value in data:
+        crc ^= value
+        for _ in range(8):
+            if crc & 1:
+                crc = (crc >> 1) ^ 0x8408
+            else:
+                crc >>= 1
+    return crc & 0xFFFF
+```
+
+### DSSS扩频
+
+ZigBee不是直接把每个bit调制到载波上，而是先将每4个bit组成一个symbol，然后查表映射为32个chip。这样原始250kbps数据经过扩频后变为2Mchip/s：
+
+$$
+250kbps \times \frac{32chips}{4bits} = 2Mchip/s
+$$
+
+代码中的 `CHIP_MAP` 保存了16个4-bit symbol对应的32-chip序列：
+
+```python
+CHIP_MAP = [
+    "11011001110000110101001000101110",  # 0x0
+    "11101101100111000011010100100010",  # 0x1
+    ...
+]
+```
+
+发送端 `bits_to_chips()` 的核心流程是：
+
+```python
+for i in range(0, len(bit_str), 4):
+    nibble = bit_str[i : i + 4]
+    symbol = int(nibble, 2)
+    chips.append(CHIP_MAP[symbol])
+```
+
+接收端则反过来，每32个chip与16个标准chip序列计算汉明距离，选择距离最小的symbol：
+
+```python
+for s, ref in enumerate(CHIP_MAP):
+    d = sum(1 for a, b in zip(chunk, ref) if a != b)
+    if d < best_d:
+        best_d, best_s = d, s
+```
+
+这使接收端能容忍少量chip错误，只要正确symbol的汉明距离仍然最小，就能恢复对应4-bit symbol。
+
+### O-QPSK与半正弦成形
+
+DSSS输出的是chip序列，实际2.4GHz PHY使用半正弦成形的 O-QPSK。其基本流程为：
+
+1. 将chip bit映射为 $-1/+1$。
+2. 偶数chip进入I路，奇数chip进入Q路。
+3. I/Q两路分别经过半正弦脉冲成形。
+4. Q路相对I路延迟半个chip，避免I/Q同时跳变。
+
+代码中 `oqpsk_modulate()` 的实现为：
+
+```python
+chips = [1.0 if b == "1" else -1.0 for b in chip_bits]
+i_chips = chips[0::2]
+q_chips = chips[1::2]
+
+pulse = half_sine_pulse(samples_per_chip)
+...
+delay = samples_per_chip // 2
+q_wave = ([0.0] * delay) + q_wave
+```
+
+半正弦脉冲为：
+
+$$
+p[n] = \sin\left(\pi \frac{n + 0.5}{N}\right)
+$$
+
+其中 $N$ 为每个chip的采样点数。半正弦成形可以让相位变化更平滑，降低带外辐射，同时O-QPSK通过半chip偏移避免QPSK中180度相位跳变。
+
+### 发送端实际代码路径
+
+基础发送脚本为 `zigbee_mod.py`，流程如下：
+
+```text
+原始bit -> PHY帧 -> DSSS chips -> O-QPSK IQ -> zigbee_iq.txt
+```
+
+其中 `build_phy_frame()` 完成前导码、SFD、length和FCS拼接；`bits_to_chips()` 完成DSSS扩频；`oqpsk_modulate()` 完成O-QPSK调制。
+
+实际用于硬件发送的是 `generate_zigbee_iq_30_72M.py`，流程略有不同：
+
+```text
+payload bytes -> PHY帧 -> DSSS chips -> 10MHz O-QPSK IQ -> FFT重采样到30.72MHz -> int16打包 -> C数组
+```
+
+这里先在10MHz下生成波形，因为10MHz对应2Mchip/s时每chip正好5个采样点，便于保持chip边界为整数采样点。之后通过FFT重采样到30.72MHz，比例为：
+
+$$
+\frac{30.72}{10} = \frac{384}{125}
+$$
+
+重采样之后再添加静默padding，避免FFT把padding边界当成周期信号的一部分产生额外频域伪影。最终数据被缩放到16位整数，并按硬件DMA格式打包：
+
+```python
+iq_uint32 = (q_uint16.astype(np.uint32) << 16) | i_uint16.astype(np.uint32)
+iq_uint32_repeated = np.repeat(iq_uint32, 2)
+```
+
+即高16位为Q路，低16位为I路，并且每个采样重复两次以适配双通道DMA格式。
+
+### 接收端实际代码路径
+
+接收端分为GNU Radio实时链路和Python帧解析两部分。
+
+`gr_zigbee.py` 负责从HackRF接收IQ并恢复chip判决：
+
+```text
+HackRF IQ -> 低通滤波 -> Costas loop -> I/Q拆分 -> 半正弦匹配滤波 -> 抽样 -> slicer -> packed chips -> ZMQ
+```
+
+关键参数为：
+
+```python
+sample_rate = 10e6
+chip_rate = 2e6
+demod_sps = int(sample_rate / chip_rate)  # 5 samples/chip
+cutoff_freq = 2.5e6
+```
+
+I/Q两路均使用与发送端一致的半正弦脉冲作为匹配滤波器：
+
+```python
+self.pulse_taps = [
+    numpy.sin(numpy.pi * (n + 0.5) / demod_sps) for n in range(demod_sps)
+]
+```
+
+之后通过 `keep_m_in_n` 每chip保留一个采样点，再经过 `binary_slicer` 转为硬判决chip bit，并通过ZMQ发给 `zigbee_rx.py`。
+
+`zigbee_rx.py` 负责将packed chip重新解析为帧：
+
+```text
+ZMQ bytes -> chips -> DSSS symbol判决 -> bits -> bytes -> preamble/SFD检测 -> FCS检查
+```
+
+帧检测时先查找 `CHIP_MAP[0]` 对应的前导码chip候选，再在候选附近窗口中恢复symbol和byte，最后调用 `find_preamble()` 检查4字节前导码和SFD。
+
+通过FCS的包计入 `crc_ok_packets`，只检测到前导码但FCS失败的包计入 `preamble_only_packets`，输出中会同时显示这两个计数。
+
+### 当前使用的优化手段
+
+（1）GNU Radio侧尽量使用C++ block完成高速流处理
+
+接收端的低通滤波、Costas loop、I/Q拆分、匹配滤波、抽样和二值判决都放在GNU Radio流图中执行，Python只处理已经判决后的chip bit，减少Python直接处理IQ采样的压力。
+
+（2）ZMQ批量读取，避免实时链路堆积
+
+`zigbee_rx.py` 中不再每轮只读取一条ZMQ消息，而是每轮最多读取200条已经到达的消息：
+
+```python
+def read_available(self, max_messages=200):
+    messages = []
+    if self.socket.poll(10) == 0:
+        return messages
+    while len(messages) < max_messages:
+        try:
+            messages.append(self.socket.recv(zmq.NOBLOCK))
+        except zmq.Again:
+            break
+    return messages
+```
+
+这样可以在Python解码速度略慢时尽快清空ZMQ积压，同时仍按顺序拼接数据，不破坏连续chip流。
+
+（3）限制缓冲区长度，避免内存持续增长
+
+接收端只保留最近的chip数据：
+
+```python
+MAX_CHIPS = 9600
+if len(chip_buf) > MAX_CHIPS:
+    chip_buf = chip_buf[-MAX_CHIPS:]
+```
+
+这可以避免长时间运行时 `chip_buf` 无限制增长。代码还会在长时间没有有效检测时清空旧噪声缓冲：
+
+```python
+if zmq_msgs > 0 and time.time() - last_clear > 3.0:
+    chip_buf = ""
+```
+
+（4）窗口化帧检测，减少全缓冲解码
+
+当前 `zigbee_rx.py` 不对整个 `chip_buf` 做完整DSSS反扩频，而是先查找 `PREAMBLE_CHIPS` 候选，再只对候选附近的小窗口做symbol恢复：
+
+```python
+PREAMBLE_SYMBOLS = PREAMBLE_BYTES * 2
+FRAME_SYMBOLS = KNOWN_FRAME_LEN * 2
+WINDOW_SYMBOLS = FRAME_SYMBOLS + PREAMBLE_SYMBOLS
+```
+
+窗口化检测不强制候选chip位置一定是帧起点，而是在窗口内继续查找完整的4字节前导码和SFD。这样相比直接截取固定帧起点更稳健，同时减少每轮需要计算汉明距离的chip数量。
+
+（5）发送端重采样顺序优化
+
+`generate_zigbee_iq_30_72M.py` 先在10MHz生成整数chip边界的O-QPSK波形，再FFT重采样到30.72MHz，最后添加padding。这样既保证了基带波形的构造简单可靠，也避免padding参与FFT重采样产生边界伪影。
+
