@@ -28,12 +28,26 @@ SFD = 0xA7
 KNOWN_FRAME_LEN = 14
 
 class ZMQSubscriber:
-    def __init__(self, addr="tcp://127.0.0.1:55556"):
-        ctx = zmq.Context(); self.socket = ctx.socket(zmq.SUB)
-        self.socket.connect(addr); self.socket.setsockopt(zmq.SUBSCRIBE, b'')
-    def iswaiting(self): return self.socket.poll(10)
-    def read(self): return self.socket.recv()
-    def close(self): self.socket.close()
+    def __init__(self, addr="tcp://127.0.0.1:55556", hwm=20):
+        ctx = zmq.Context()
+        self.socket = ctx.socket(zmq.SUB)
+        self.socket.setsockopt(zmq.RCVHWM, hwm)
+        self.socket.setsockopt(zmq.LINGER, 0)
+        self.socket.setsockopt(zmq.SUBSCRIBE, b'')
+        self.socket.connect(addr)
+
+    def read_available(self, max_messages=200):
+        messages = []
+        if self.socket.poll(10) == 0:
+            return messages
+        while len(messages) < max_messages:
+            try:
+                messages.append(self.socket.recv(zmq.NOBLOCK))
+            except zmq.Again:
+                break
+        return messages
+
+    def close(self): return self.socket.close()
 
 def unpack_bytes_to_chips(data):
     chips = []
@@ -81,6 +95,8 @@ print(f"RX: {gr_block_obj.get_freq()/1e6:.1f} MHz "
 
 zmq_sub = ZMQSubscriber()
 zmq_msgs = 0
+crc_ok_packets = 0
+preamble_only_packets = 0
 last_report = time.time()
 last_clear = time.time()
 chip_buf = ""
@@ -88,13 +104,10 @@ MAX_CHIPS = 9600
 
 try:
     while True:
-        raw = None
-        if zmq_sub.iswaiting() != 0:
-            raw = zmq_sub.read()
-            zmq_msgs += 1
-
-        if raw and len(raw) > 0:
-            chips = unpack_bytes_to_chips(raw)
+        raw_msgs = zmq_sub.read_available()
+        if raw_msgs:
+            zmq_msgs += len(raw_msgs)
+            chips = "".join(unpack_bytes_to_chips(raw) for raw in raw_msgs if raw)
             chip_buf += chips
             if len(chip_buf) > MAX_CHIPS:
                 chip_buf = chip_buf[-MAX_CHIPS:]
@@ -126,8 +139,14 @@ try:
                         else:
                             fcs_ok = False
 
+                        if fcs_ok:
+                            crc_ok_packets += 1
+                        else:
+                            preamble_only_packets += 1
+
                         chip_pos = pos * 32
-                        print(f"\n=== PREAMBLE at byte {pos}  FCS={'OK' if fcs_ok else 'FAIL'} ===")
+                        print(f"\n=== PREAMBLE at byte {pos}  FCS={'OK' if fcs_ok else 'FAIL'} "
+                              f"crc_ok:{crc_ok_packets} preamble_only:{preamble_only_packets} ===")
                         print(f"Chips around preamble: {chip_buf[chip_pos:chip_pos+64]}")
                         print(f"Symbol distances: {[d for _,d in syms[pos*2:pos*2+8]]}")
                         if fcs_ok:
@@ -137,7 +156,9 @@ try:
 
         if time.time() - last_report >= 2.0 and zmq_msgs > 0:
             preview = chip_buf[:100] if chip_buf else "(empty)"
-            print(f"[msgs:{zmq_msgs} chips:{len(chip_buf)} raw:{preview}]")
+            print(f"[msgs:{zmq_msgs} chips:{len(chip_buf)} "
+                  f"crc_ok:{crc_ok_packets} preamble_only:{preamble_only_packets} "
+                  f"raw:{preview}]")
             last_report = time.time()
 
 except KeyboardInterrupt:
