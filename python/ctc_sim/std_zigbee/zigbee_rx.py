@@ -26,6 +26,10 @@ PREAMBLE_CHIPS = CHIP_MAP[0]  # "11011001110000110101001000101110"
 PREAMBLE_BYTES = 4
 SFD = 0xA7
 KNOWN_FRAME_LEN = 14
+PREAMBLE_SYMBOLS = PREAMBLE_BYTES * 2
+FRAME_SYMBOLS = KNOWN_FRAME_LEN * 2
+FRAME_CHIPS = FRAME_SYMBOLS * 32
+WINDOW_SYMBOLS = FRAME_SYMBOLS + PREAMBLE_SYMBOLS
 
 class ZMQSubscriber:
     def __init__(self, addr="tcp://127.0.0.1:55556", hwm=20):
@@ -86,6 +90,33 @@ def find_preamble(data):
             return data[i:i+KNOWN_FRAME_LEN], i
     return None, -1
 
+def find_frame_window(chips):
+    search_pos = 0
+    while True:
+        candidate = chips.find(PREAMBLE_CHIPS, search_pos)
+        if candidate < 0:
+            return None, -1, None, 0
+        if len(chips) - candidate < FRAME_CHIPS:
+            return None, -1, None, 0
+
+        align_offset = candidate % 32
+        candidate_symbol = (candidate - align_offset) // 32
+        start_symbol = max(candidate_symbol - PREAMBLE_SYMBOLS, 0)
+        start_chip = align_offset + start_symbol * 32
+        end_chip = min(len(chips), start_chip + WINDOW_SYMBOLS * 32)
+
+        syms = chips_to_symbols(chips[start_chip:end_chip])
+        if syms:
+            bits = symbols_to_bits(syms)
+            data = bits_to_bytes_lsb(bits)
+            frame, byte_pos = find_preamble(data)
+            if frame is not None:
+                local_symbol = byte_pos * 2
+                preamble_chip = start_chip + local_symbol * 32
+                return frame, preamble_chip, syms, local_symbol
+
+        search_pos = candidate + 1
+
 
 gr_block_obj = gr_block()
 gr_block_obj.start()
@@ -118,41 +149,31 @@ try:
             last_clear = time.time()
 
         if len(chip_buf) >= 32 * (PREAMBLE_BYTES + 2):
-            # Search for preamble chip pattern to find DSSS alignment
-            pos = chip_buf.find(PREAMBLE_CHIPS) if len(chip_buf) >= 64 else -1
-            if pos >= 0:
-                align_offset = pos % 32
-                aligned = chip_buf[align_offset:]
-                syms = chips_to_symbols(aligned)
-                if syms:
-                    bits = symbols_to_bits(syms)
-                    data = bits_to_bytes_lsb(bits)
-                    frame, pos = find_preamble(data)
-                    if frame is not None:
-                        last_clear = time.time()
-                        payload_len = frame[5] - 2
-                        if payload_len > 0 and len(frame) >= 6 + payload_len + 2:
-                            mac = frame[6:6+payload_len]
-                            fcs_rx = frame[6+payload_len] | (frame[6+payload_len+1] << 8)
-                            fcs_calc = crc16_ccitt(mac)
-                            fcs_ok = (fcs_rx == fcs_calc)
-                        else:
-                            fcs_ok = False
+            frame, chip_pos, syms, sym_pos = find_frame_window(chip_buf)
+            if frame is not None:
+                last_clear = time.time()
+                payload_len = frame[5] - 2
+                if payload_len > 0 and len(frame) >= 6 + payload_len + 2:
+                    mac = frame[6:6+payload_len]
+                    fcs_rx = frame[6+payload_len] | (frame[6+payload_len+1] << 8)
+                    fcs_calc = crc16_ccitt(mac)
+                    fcs_ok = (fcs_rx == fcs_calc)
+                else:
+                    fcs_ok = False
 
-                        if fcs_ok:
-                            crc_ok_packets += 1
-                        else:
-                            preamble_only_packets += 1
+                if fcs_ok:
+                    crc_ok_packets += 1
+                else:
+                    preamble_only_packets += 1
 
-                        chip_pos = pos * 32
-                        print(f"\n=== PREAMBLE at byte {pos}  FCS={'OK' if fcs_ok else 'FAIL'} "
-                              f"crc_ok:{crc_ok_packets} preamble_only:{preamble_only_packets} ===")
-                        print(f"Chips around preamble: {chip_buf[chip_pos:chip_pos+64]}")
-                        print(f"Symbol distances: {[d for _,d in syms[pos*2:pos*2+8]]}")
-                        if fcs_ok:
-                            print(f"Payload: {[hex(b) for b in mac]}")
-                        print(f"Frame bytes: {' '.join(f'{b:02X}' for b in frame)}")
-                        chip_buf = ""
+                print(f"\n=== PREAMBLE at chip {chip_pos}  FCS={'OK' if fcs_ok else 'FAIL'} "
+                      f"crc_ok:{crc_ok_packets} preamble_only:{preamble_only_packets} ===")
+                print(f"Chips around preamble: {chip_buf[chip_pos:chip_pos+64]}")
+                print(f"Symbol distances: {[d for _,d in syms[sym_pos:sym_pos+8]]}")
+                if fcs_ok:
+                    print(f"Payload: {[hex(b) for b in mac]}")
+                print(f"Frame bytes: {' '.join(f'{b:02X}' for b in frame)}")
+                chip_buf = ""
 
         if time.time() - last_report >= 2.0 and zmq_msgs > 0:
             preview = chip_buf[:100] if chip_buf else "(empty)"
