@@ -98,7 +98,7 @@ def generate_zigbee_iq_30_72M(payload_bytes, pad_us=500):
 
 
 if __name__ == '__main__':
-    payload = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]
+    payload = [0x11, 0x22, 0x33, 0x44, 0x55]
 
     pad_us = 500
     iq_data = generate_zigbee_iq_30_72M(payload, pad_us=pad_us)

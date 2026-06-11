@@ -46,6 +46,7 @@ class gr_zigbee(gr.top_block):
         # keep 1 out of every (2 * sps), starting at offset sps + sps//2
         self.demod_keep_n = demod_keep_n = demod_sps
         self.demod_keep_offset = demod_keep_offset = 0  # 0-4, tune for best symbol dist
+        self.phase_keep_offset = phase_keep_offset = 0  # 0-4, phase-diff BlueBee chip sampler
 
         # Half-sine pulse for OQPSK matched filter
         self.pulse_taps = pulse_taps = [
@@ -57,7 +58,9 @@ class gr_zigbee(gr.top_block):
         ##################################################
 
         self.zeromq_pub_sink = zeromq.pub_sink(gr.sizeof_char, 1, 'tcp://127.0.0.1:55556', 100, False, (20), '', True, True)
+        self.phase_zeromq_pub_sink = zeromq.pub_sink(gr.sizeof_char, 1, 'tcp://127.0.0.1:55557', 100, False, (20), '', True, True)
         self.unpacked_to_packed = blocks.unpacked_to_packed_bb(1, gr.GR_LSB_FIRST)
+        self.phase_unpacked_to_packed = blocks.unpacked_to_packed_bb(1, gr.GR_LSB_FIRST)
 
         self.rtlsdr_source_0 = osmosdr.source(
             args="numchan=" + str(1) + " " + "hackrf=0"
@@ -78,6 +81,14 @@ class gr_zigbee(gr.top_block):
         self.freq_xlating_fir_filter_lp = filter.freq_xlating_fir_filter_ccc(1, lowpass_filter, (-freq_offset), sample_rate)
 
         self.costas_loop = digital.costas_loop_cc(0.02, 4, False)
+
+        # BlueBee phase-difference path: sign(angle(s[n] * conj(s[n-1]))).
+        self.phase_delay = blocks.delay(gr.sizeof_gr_complex, 1)
+        self.phase_conj = blocks.conjugate_cc()
+        self.phase_multiply = blocks.multiply_vcc(1)
+        self.phase_arg = blocks.complex_to_arg(1)
+        self.phase_keep = blocks.keep_m_in_n(gr.sizeof_float, 1, demod_keep_n, phase_keep_offset)
+        self.phase_slicer = digital.binary_slicer_fb()
 
         # Split I/Q
         self.complex_to_real = blocks.complex_to_real(1)
@@ -126,6 +137,17 @@ class gr_zigbee(gr.top_block):
 
         # Recording: FILTERED IQ (DC offset removed by filter)
         self.connect((self.freq_xlating_fir_filter_lp, 0), (self.blocks_file_sink_0, 0))
+
+        # Phase-difference BlueBee detector path. This does not feed normal ZigBee decoding.
+        self.connect((self.freq_xlating_fir_filter_lp, 0), (self.phase_multiply, 0))
+        self.connect((self.freq_xlating_fir_filter_lp, 0), (self.phase_delay, 0))
+        self.connect((self.phase_delay, 0), (self.phase_conj, 0))
+        self.connect((self.phase_conj, 0), (self.phase_multiply, 1))
+        self.connect((self.phase_multiply, 0), (self.phase_arg, 0))
+        self.connect((self.phase_arg, 0), (self.phase_keep, 0))
+        self.connect((self.phase_keep, 0), (self.phase_slicer, 0))
+        self.connect((self.phase_slicer, 0), (self.phase_unpacked_to_packed, 0))
+        self.connect((self.phase_unpacked_to_packed, 0), (self.phase_zeromq_pub_sink, 0))
 
     def get_transition_width(self):
         return self.transition_width
@@ -210,6 +232,20 @@ class gr_zigbee(gr.top_block):
 
     def set_demod_sps(self, demod_sps):
         self.demod_sps = demod_sps
+        if hasattr(self, 'i_keep'):
+            self.i_keep.set_n(self.demod_sps)
+        if hasattr(self, 'q_keep'):
+            self.q_keep.set_n(self.demod_sps)
+        if hasattr(self, 'phase_keep'):
+            self.phase_keep.set_n(self.demod_sps)
+
+    def get_phase_keep_offset(self):
+        return self.phase_keep_offset
+
+    def set_phase_keep_offset(self, phase_keep_offset):
+        self.phase_keep_offset = int(phase_keep_offset)
+        if hasattr(self, 'phase_keep'):
+            self.phase_keep.set_offset(self.phase_keep_offset)
 
     def get_freq_offset(self):
         return self.freq_offset
