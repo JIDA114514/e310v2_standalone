@@ -235,4 +235,6 @@ void ble_tx_stop(double *param, char param_no);
 void ble_tx_task_tick();
 
 void change_freq(double *param, char param_no);
+
+void change_dma_context(double *param, char param_no);
 #endif // __COMMAND_H__

@@ -120,7 +120,8 @@ command cmd_list[] = {
 	{"ble_tx_stop?", "stop BLE TX demo, and set DDS", "", ble_tx_stop},
 	{"change_freq?", "change BLE TX chan to next freq", "", change_freq},
 	{"ble_rx_demo?", "Receive BLE packet", "", ble_rx_service_start},
-	{"ble_rx_stop?", "Stop receiving BLE packet", "", ble_rx_service_stop}
+	{"ble_rx_stop?", "Stop receiving BLE packet", "", ble_rx_service_stop},
+	{"dma_switch?", "change dma context", "", change_dma_context}
 };
 	
 const char cmd_no = (sizeof(cmd_list) / sizeof(command));
@@ -136,6 +137,7 @@ extern const uint32_t custom_iq_lut[768 * 2] __attribute__((aligned));
 extern const uint32_t ble_iq_ch37[13764] __attribute__((aligned));
 extern const uint32_t ble_iq_ch38[13764] __attribute__((aligned));
 extern const uint32_t ble_iq_ch39[13272] __attribute__((aligned));
+extern const uint32_t bluebee_iq_ch39[145982] __attribute__((aligned(64)));
 static struct axi_dma_transfer transfer = {
 	// Number of bytes to write/read; double because of 2T2R mode
 	.size = sizeof(custom_iq_lut),
@@ -156,6 +158,17 @@ static XTime last_hop_time = 0;
 #define LO_FREQ_CH38 			(2426000000)
 #define LO_FREQ_CH39 			(2480000000)
 #define ZIGBEE_CHANNEL_11		(2405000000)
+#define ZIGBEE_CHANNEL_26		(2480000000)
+
+enum dma_context {
+//	BLE_ADV_CH39,
+	ZIGEE_PREM_CH26,
+//	SINWAVE,
+	BLUEBEE_CH39
+};
+
+static uint8_t context = 0;
+
 static const char *datasel_to_str(enum axi_dac_data_sel s)
 {
 	switch (s)
@@ -238,26 +251,53 @@ void dma_tx_demo(double *param, char param_no)
     no_os_gpio_set_value(ad9361_phy->gpio_desc_tx2_ctrl_l, 1);
     ad9361_set_tx_rf_port_output(ad9361_phy, TXB);
 //    ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH39);
-    ad9361_set_tx_lo_freq(ad9361_phy, ZIGBEE_CHANNEL_11);
+    ad9361_set_tx_lo_freq(ad9361_phy, ZIGBEE_CHANNEL_26);
 	printf("dma data loaded!\n");
 	Xil_DCacheFlush();
 	/* Flush cache data. */
 //	Xil_DCacheInvalidateRange((uintptr_t)ble_iq_ch39, sizeof(ble_iq_ch39));
+	Xil_DCacheFlushRange((uintptr_t)bluebee_iq_ch39, sizeof(bluebee_iq_ch39));
 	Xil_DCacheFlushRange((uintptr_t)zigbee_iq, sizeof(zigbee_iq));
 	/* Transfer the data. */
 	axi_dac_write(ad9361_phy->tx_dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
 	transfer.cyclic = CYCLIC;
-	transfer.size = sizeof(zigbee_iq);
-	transfer.src_addr = (uintptr_t)zigbee_iq;
+	transfer.size = sizeof(bluebee_iq_ch39);
+	transfer.src_addr = (uintptr_t)bluebee_iq_ch39;
 	int ret = axi_dmac_transfer_start(tx_dmac, &transfer);
 	if (ret == 0)
+	{
 		printf("start transfer!\n");
+		context = BLUEBEE_CH39;
+	}
 	else
 	{
 		printf("dma start failed\n");
 	}
 	//
 //	no_os_mdelay(1000);
+}
+
+void change_dma_context(double *param, char param_no){
+	axi_dmac_transfer_stop(tx_dmac);
+	if(context == BLUEBEE_CH39){
+		transfer.size = sizeof(zigbee_iq);
+		transfer.src_addr = (uintptr_t)zigbee_iq;
+		context = ZIGEE_PREM_CH26;
+		printf("dma set to zigbee\n");
+	}
+	else{
+		transfer.size = sizeof(bluebee_iq_ch39);
+		transfer.src_addr = (uintptr_t)bluebee_iq_ch39;
+		context = BLUEBEE_CH39;
+		printf("dma set to BlueBee\n");
+	}
+	int ret = axi_dmac_transfer_start(tx_dmac, &transfer);
+	if(ret == 0){
+		printf("dma set\n");
+	}
+	else{
+		printf("dma change failed\n");
+	}
 }
 
 void ble_tx_demo(double *param, char param_no){
