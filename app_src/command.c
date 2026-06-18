@@ -54,6 +54,11 @@
 #include "ble.h"
 #include "ble_tx_adv.h"
 #include "zigbee_tx.h"
+#include "ble_exadv.h"
+//#include "../../../../../../python/std_ble/ble_exadv_waveform_30_72M.h"
+
+static void ble_exadv_tx_cmd(double *param, char param_no);
+static void ble_exadv_stop_cmd(double *param, char param_no);
 
 /******************************************************************************/
 /************************ Constants Definitions *******************************/
@@ -117,6 +122,8 @@ command cmd_list[] = {
 	{"dma_tx_demo?", "Sends data in dma", "", dma_tx_demo},
 	{"ble_tx_demo?", "Sends BLE data in dma", "", ble_tx_demo},
 	{"ble_tx_adv_name?", "Generate and send BLE ADV name SDR_BLE", "", ble_tx_adv_name_demo},
+	{"ble_exadv_tx?", "Start BLE extended advertising loop: primary ch39 then secondary ch3", "ble_exadv_tx? 6990 20000 0", ble_exadv_tx_cmd},
+	{"ble_exadv_stop?", "Stop BLE extended advertising loop", "", ble_exadv_stop_cmd},
 	{"ble_tx_stop?", "stop BLE TX demo, and set DDS", "", ble_tx_stop},
 	{"change_freq?", "change BLE TX chan to next freq", "", change_freq},
 	{"ble_rx_demo?", "Receive BLE packet", "", ble_rx_service_start},
@@ -138,6 +145,7 @@ extern const uint32_t ble_iq_ch37[13764] __attribute__((aligned));
 extern const uint32_t ble_iq_ch38[13764] __attribute__((aligned));
 extern const uint32_t ble_iq_ch39[13272] __attribute__((aligned));
 extern const uint32_t bluebee_iq_ch39[145982] __attribute__((aligned(64)));
+//extern const uint32_t ble_exadv_primary_iq_ch37[72746] __attribute__((aligned(64)));
 static struct axi_dma_transfer transfer = {
 	// Number of bytes to write/read; double because of 2T2R mode
 	.size = sizeof(custom_iq_lut),
@@ -158,6 +166,7 @@ static XTime last_hop_time = 0;
 #define LO_FREQ_CH38 			(2426000000)
 #define LO_FREQ_CH39 			(2480000000)
 #define ZIGBEE_CHANNEL_11		(2405000000)
+#define ZIGBEE_CHANNEL_12		(2410000000)
 #define ZIGBEE_CHANNEL_26		(2480000000)
 
 enum dma_context {
@@ -244,6 +253,8 @@ void debug_information(double *param, char param_no)
 
 void dma_tx_demo(double *param, char param_no)
 {
+	is_ble_tx_active = 0;
+	ble_exadv_stop(0);
     axi_dac_set_datasel(ad9361_phy->tx_dac, -1, AXI_DAC_DATA_SEL_DMA);
     no_os_gpio_set_value(ad9361_phy->gpio_desc_tx1_ctrl_h, 0);
     no_os_gpio_set_value(ad9361_phy->gpio_desc_tx1_ctrl_l, 1);
@@ -251,7 +262,7 @@ void dma_tx_demo(double *param, char param_no)
     no_os_gpio_set_value(ad9361_phy->gpio_desc_tx2_ctrl_l, 1);
     ad9361_set_tx_rf_port_output(ad9361_phy, TXB);
 //    ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH39);
-    ad9361_set_tx_lo_freq(ad9361_phy, ZIGBEE_CHANNEL_26);
+    ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH37);
 	printf("dma data loaded!\n");
 	Xil_DCacheFlush();
 	/* Flush cache data. */
@@ -278,6 +289,8 @@ void dma_tx_demo(double *param, char param_no)
 }
 
 void change_dma_context(double *param, char param_no){
+	is_ble_tx_active = 0;
+	ble_exadv_stop(0);
 	axi_dmac_transfer_stop(tx_dmac);
 	if(context == BLUEBEE_CH39){
 		transfer.size = sizeof(zigbee_iq);
@@ -301,6 +314,7 @@ void change_dma_context(double *param, char param_no){
 }
 
 void ble_tx_demo(double *param, char param_no){
+	ble_exadv_stop(0);
 	if(tx_dmac == NULL || ad9361_phy->tx_dac == NULL){
 		printf("errors in dma or dac\n");
 		return;
@@ -337,8 +351,24 @@ void ble_tx_demo(double *param, char param_no){
 	}
 }
 
+static void ble_exadv_tx_cmd(double *param, char param_no)
+{
+	is_ble_tx_active = 0;
+	ble_exadv_stop(0);
+	ble_exadv_tx_demo(param, param_no);
+}
+
+static void ble_exadv_stop_cmd(double *param, char param_no)
+{
+	(void)param;
+	(void)param_no;
+	ble_exadv_stop(1);
+	printf("BLE EXT ADV stopped\n");
+}
+
 void ble_tx_stop(double *param, char param_no){
 	is_ble_tx_active = 0;
+	ble_exadv_stop(1);
 	if(tx_dmac != NULL){
 		axi_dmac_transfer_stop(tx_dmac);
 		axi_dac_set_datasel(ad9361_phy->tx_dac, -1, AXI_DAC_DATA_SEL_DDS);
@@ -347,6 +377,7 @@ void ble_tx_stop(double *param, char param_no){
 }
 
 void change_freq(double *param, char param_no){
+	ble_exadv_stop(0);
 	// current_channel++;
 	if (current_channel == 37)
 	{

@@ -124,15 +124,17 @@ class BlePacketDetector:
             pos += 6
         if flags & 0x02 and pos + 6 <= len(ext_hdr):
             pos += 6
-        if flags & 0x04 and pos + 2 <= len(ext_hdr):
+        if flags & 0x04 and pos + 1 <= len(ext_hdr):
+            pos += 1
+        if flags & 0x08 and pos + 2 <= len(ext_hdr):
             info["adi"] = self._decode_adi(ext_hdr[pos:pos + 2])
             pos += 2
-        if flags & 0x08 and pos + 18 <= len(ext_hdr):
-            pos += 18
         if flags & 0x10 and pos + 3 <= len(ext_hdr):
             info["aux_ptr"] = self._decode_aux_ptr(ext_hdr[pos:pos + 3])
             pos += 3
-        if flags & 0x20 and pos + 1 <= len(ext_hdr):
+        if flags & 0x20 and pos + 18 <= len(ext_hdr):
+            pos += 18
+        if flags & 0x40 and pos + 1 <= len(ext_hdr):
             pos += 1
         return info
 
@@ -148,7 +150,7 @@ class BlePacketDetector:
         adv_data = info["adv_data"]
         if (flags & 0x11) == 0x11:
             return "primary", info
-        if (flags & 0x04) and adv_data:
+        if (flags & 0x08) and adv_data:
             return "secondary", info
         return "extended", info
 
@@ -261,18 +263,21 @@ class BlePacketDetector:
         if flags & 0x02 and pos + 6 <= len(ext_hdr):
             fields.append(f"TargetA={self._mac_from_adv_addr(ext_hdr[pos:pos + 6])}")
             pos += 6
-        if flags & 0x04 and pos + 2 <= len(ext_hdr):
+        if flags & 0x04 and pos + 1 <= len(ext_hdr):
+            fields.append(f"CTEInfo=0x{ext_hdr[pos]:02X}")
+            pos += 1
+        if flags & 0x08 and pos + 2 <= len(ext_hdr):
             adi = self._decode_adi(ext_hdr[pos:pos + 2])
             fields.append(f"ADI=SID{adi[0]} DID{adi[1]}")
             pos += 2
-        if flags & 0x08 and pos + 1 <= len(ext_hdr):
-            fields.append(f"AuxPtr?SkippedSyncInfo={self._hex(ext_hdr[pos:pos + 18])}")
-            pos += 18
         if flags & 0x10 and pos + 3 <= len(ext_hdr):
             aux = self._decode_aux_ptr(ext_hdr[pos:pos + 3])
             fields.append(f"AuxPtr=ch{aux[0]} off{aux[3]}us phy{aux[4]} ca{aux[1]}")
             pos += 3
-        if flags & 0x20 and pos + 1 <= len(ext_hdr):
+        if flags & 0x20 and pos + 18 <= len(ext_hdr):
+            fields.append(f"SyncInfo={self._hex(ext_hdr[pos:pos + 18])}")
+            pos += 18
+        if flags & 0x40 and pos + 1 <= len(ext_hdr):
             fields.append(f"TxPower={int.from_bytes(bytes([ext_hdr[pos]]), 'little', signed=True)}dBm")
             pos += 1
         if pos < len(ext_hdr):

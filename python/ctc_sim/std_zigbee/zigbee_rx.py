@@ -32,11 +32,76 @@ MIN_FRAME_SYMBOLS = MIN_FRAME_BYTES * 2
 PREAMBLE_ONLY_BYTES = [0x00] * PREAMBLE_BYTES + [SFD, 0x00]
 PREAMBLE_ONLY_SYMBOLS = [0, 0, 0, 0, 0, 0, 0, 0, 14, 5, 0, 0]
 PREAMBLE_ONLY_MAX_SYMBOL_DIST = 144
+PHASE_TEMPLATE_MAX_DIST = 110
+PHASE_DETECT_CONFIRMATIONS = 2
 BLUEBEE_SCAN_CHIPS = 2048
 BLUEBEE_SCAN_PERIOD = 0.5
+PHASE_SCAN_PERIOD = 0.05
 PHASE_SCAN_CHIPS = 4096
 PHASE_MAX_CHIPS = 9600
 DIAG_SCAN_CHIPS = 4096
+BYTE_TO_CHIPS = tuple(
+    "".join("1" if (value >> bit) & 1 else "0" for bit in range(8))
+    for value in range(256)
+)
+
+
+def chips_to_int(chips):
+    value = 0
+    for ch in chips:
+        value = (value << 1) | (1 if ch == "1" else 0)
+    return value
+
+
+def bluebee_constrain_pair(pair_bits):
+    return "11" if pair_bits.count("1") > 1 else "00"
+
+
+def bluebee_legacy_symbol_chips(symbol):
+    chips = CHIP_MAP[symbol]
+    return "".join(bluebee_constrain_pair(chips[i:i+2]) for i in range(0, 32, 2))
+
+
+def bluebee_candidate_chips(chips):
+    candidates = [""]
+    for i in range(0, 32, 2):
+        pair = chips[i:i+2]
+        choices = (pair,) if pair in ("00", "11") else ("00", "11")
+        candidates = [prefix + choice for prefix in candidates for choice in choices]
+    return candidates
+
+
+def bluebee_optimized_symbol_chips(symbol):
+    chips = CHIP_MAP[symbol]
+    best = None
+    for candidate in bluebee_candidate_chips(chips):
+        intra = sum(1 for a, b in zip(candidate, chips) if a != b)
+        inter = [
+            sum(1 for a, b in zip(candidate, other) if a != b)
+            for other_symbol, other in enumerate(CHIP_MAP)
+            if other_symbol != symbol
+        ]
+        score = (-intra, min(inter), sum(inter), candidate)
+        if best is None or score > best[0]:
+            best = (score, candidate)
+    return best[1]
+
+
+def build_phase_templates():
+    templates = []
+    for name, builder in (("optimized", bluebee_optimized_symbol_chips), ("legacy", bluebee_legacy_symbol_chips)):
+        chips = "".join(builder(symbol) for symbol in PREAMBLE_ONLY_SYMBOLS)
+        templates.append({
+            "name": name,
+            "chips": chips,
+            "int": chips_to_int(chips),
+            "len": len(chips),
+            "mask": (1 << len(chips)) - 1,
+        })
+    return templates
+
+
+PHASE_TEMPLATES = build_phase_templates()
 
 class ZMQSubscriber:
     def __init__(self, addr="tcp://127.0.0.1:55556", hwm=20):
@@ -61,10 +126,7 @@ class ZMQSubscriber:
     def close(self): return self.socket.close()
 
 def unpack_bytes_to_chips(data):
-    chips = []
-    for byte in data:
-        for i in range(8): chips.append("1" if (byte >> i) & 1 else "0")
-    return "".join(chips)
+    return "".join(BYTE_TO_CHIPS[byte] for byte in data)
 
 def chips_to_symbols(chips):
     symbols = []
@@ -309,31 +371,45 @@ def find_preamble_only_window(chips):
         return None, -1, None, 0, "none", None
     return None, best[1], best[2], best[3], best[4], f"mismatch:{best[5]} dist:{best[6]}"
 
-def find_phase_preamble_window(chips, max_mismatch=0, max_dist=PREAMBLE_ONLY_MAX_SYMBOL_DIST):
+def find_phase_preamble_window(chips, max_mismatch=0, max_dist=PHASE_TEMPLATE_MAX_DIST):
+    if len(chips) < PHASE_TEMPLATES[0]["len"]:
+        return None, -1, None, 0, None, None
+
     best = None
-    for align_offset in range(32):
-        syms = chips_to_symbols(chips[align_offset:])
-        if len(syms) < len(PREAMBLE_ONLY_SYMBOLS):
-            continue
-        for sym_pos in range(0, len(syms) - len(PREAMBLE_ONLY_SYMBOLS) + 1):
-            mismatch, dist = symbol_window_distance(syms, sym_pos, PREAMBLE_ONLY_SYMBOLS)
-            score = mismatch * 1000 + dist
-            chip_pos = align_offset + sym_pos * 32
-            if best is None or score < best["score"]:
-                window = syms[sym_pos:sym_pos+len(PREAMBLE_ONLY_SYMBOLS)]
+    window_len = PHASE_TEMPLATES[0]["len"]
+    window = chips_to_int(chips[:window_len])
+
+    for pos in range(0, len(chips) - window_len + 1):
+        if pos > 0:
+            window = ((window << 1) & PHASE_TEMPLATES[0]["mask"]) | (1 if chips[pos + window_len - 1] == "1" else 0)
+
+        for template in PHASE_TEMPLATES:
+            dist = (window ^ template["int"]).bit_count()
+            if best is None or dist < best["dist"]:
                 best = {
-                    "score": score,
-                    "chip_pos": chip_pos,
-                    "align": align_offset,
-                    "sym_pos": sym_pos,
-                    "mismatch": mismatch,
+                    "score": dist,
+                    "chip_pos": pos,
+                    "align": pos % 32,
+                    "sym_pos": 0,
+                    "mismatch": 0 if dist <= max_dist else 1,
                     "dist": dist,
-                    "symbols": [v for v, _ in window],
-                    "distances": [d for _, d in window],
-                    "chips": chips[chip_pos:chip_pos+96],
+                    "template": template["name"],
+                    "chips": chips[pos:pos+96],
                 }
-            if mismatch <= max_mismatch and dist <= max_dist:
-                return PREAMBLE_ONLY_BYTES, chip_pos, syms, sym_pos, dist, best
+            if dist <= max_dist:
+                syms = chips_to_symbols(chips[pos:pos+window_len])
+                best.update({
+                    "symbols": [v for v, _ in syms[:len(PREAMBLE_ONLY_SYMBOLS)]],
+                    "distances": [d for _, d in syms[:len(PREAMBLE_ONLY_SYMBOLS)]],
+                })
+                return PREAMBLE_ONLY_BYTES, pos, syms, 0, dist, best
+
+    if best is not None:
+        syms = chips_to_symbols(chips[best["chip_pos"]:best["chip_pos"]+window_len])
+        best.update({
+            "symbols": [v for v, _ in syms[:len(PREAMBLE_ONLY_SYMBOLS)]],
+            "distances": [d for _, d in syms[:len(PREAMBLE_ONLY_SYMBOLS)]],
+        })
     return None, -1, None, 0, None, best
 
 
@@ -389,6 +465,9 @@ parser.add_argument("--no-bluebee-scan", action="store_true", help="disable Blue
 parser.add_argument("--no-phase-rx", action="store_true", help="disable fast BlueBee phase-difference ZMQ detector")
 parser.add_argument("--phase-zmq", default="tcp://127.0.0.1:55557", help="ZMQ endpoint for phase-difference BlueBee chips")
 parser.add_argument("--phase-keep-offset", type=int, default=0, help="sample offset 0..4 used by the GNU Radio phase chip sampler")
+parser.add_argument("--phase-scan-period", type=float, default=PHASE_SCAN_PERIOD, help="seconds between fast phase-domain BlueBee scans")
+parser.add_argument("--phase-hit-print-every", type=int, default=1, help="print every N phase preamble hits; use larger values to reduce stdout overhead")
+parser.add_argument("--phase-detect-confirmations", type=int, default=PHASE_DETECT_CONFIRMATIONS, help="consecutive phase-template matches required before counting a BlueBee preamble")
 parser.add_argument("--diag", action="store_true", help="print periodic nearest-preamble diagnostics even when no packet is detected")
 parser.add_argument("--diag-period", type=float, default=1.0, help="seconds between --diag reports")
 parser.add_argument("--iq-output", default=None, help="optional complex64 filtered-IQ recording path for bluebee_phase_analyze.py")
@@ -397,7 +476,7 @@ parser.add_argument("--phase-diag-period", type=float, default=1.0, help="second
 parser.add_argument("--phase-diag-samples", type=int, default=50000, help="complex64 IQ tail samples used by each --phase-diag report")
 parser.add_argument("--phase-diag-chips", type=int, default=4096, help="maximum sliced chips searched by each --phase-diag report")
 parser.add_argument("--phase-detect-max-mismatch", type=int, default=0, help="maximum symbol mismatch accepted as a phase-domain BlueBee preamble hit")
-parser.add_argument("--phase-detect-max-dist", type=int, default=144, help="maximum total symbol distance accepted as a phase-domain BlueBee preamble hit")
+parser.add_argument("--phase-detect-max-dist", type=int, default=PHASE_TEMPLATE_MAX_DIST, help="maximum template Hamming distance accepted as a phase-domain BlueBee preamble hit")
 parser.add_argument("--freq-offset", type=float, default=0.0, help="optional RX frequency offset in Hz applied in gr_zigbee")
 args = parser.parse_args()
 if args.phase_diag and not args.iq_output:
@@ -426,6 +505,8 @@ phase_zmq_msgs = 0
 crc_ok_packets = 0
 preamble_only_packets = 0
 phase_preamble_hits = 0
+phase_candidate_streak = 0
+phase_best_dist = None
 last_report = time.time()
 last_clear = time.time()
 last_bluebee_scan = 0.0
@@ -469,7 +550,7 @@ try:
 
         if (not args.no_phase_rx
                 and len(phase_chip_buf) >= MIN_FRAME_SYMBOLS * 32
-                and time.time() - last_phase_scan >= BLUEBEE_SCAN_PERIOD):
+                and time.time() - last_phase_scan >= args.phase_scan_period):
             last_phase_scan = time.time()
             phase_scan_buf = phase_chip_buf[-PHASE_SCAN_CHIPS:]
             phase_frame, phase_local_chip_pos, phase_syms, phase_sym_pos, phase_dist, phase_best = find_phase_preamble_window(
@@ -477,20 +558,27 @@ try:
                 max_mismatch=args.phase_detect_max_mismatch,
                 max_dist=args.phase_detect_max_dist,
             )
-            if phase_frame is not None:
-                preamble_only_packets += 1
-                phase_preamble_hits += 1
+            phase_best_dist = phase_best["dist"] if phase_best is not None else None
+            if phase_frame is None:
+                phase_candidate_streak = 0
+            else:
+                phase_candidate_streak += 1
                 phase_chip_pos = len(phase_chip_buf) - len(phase_scan_buf) + phase_local_chip_pos
-                print(
-                    f"\n=== PHASE PREAMBLE at chip {phase_chip_pos} "
-                    f"hit:{phase_preamble_hits} crc_ok:{crc_ok_packets} "
-                    f"preamble_only:{preamble_only_packets} dist:{phase_dist} "
-                    f"align:{phase_local_chip_pos % 32} ==="
-                )
-                print(f"Phase symbols: {[v for v,_ in phase_syms[phase_sym_pos:phase_sym_pos+12]]}")
-                print(f"Phase distances: {[d for _,d in phase_syms[phase_sym_pos:phase_sym_pos+12]]}")
-                print(f"Phase chips: {phase_chip_buf[phase_chip_pos:phase_chip_pos+96]}")
-                phase_chip_buf = ""
+                if phase_candidate_streak >= args.phase_detect_confirmations:
+                    preamble_only_packets += 1
+                    phase_preamble_hits += 1
+                    phase_candidate_streak = 0
+                    if args.phase_hit_print_every > 0 and phase_preamble_hits % args.phase_hit_print_every == 0:
+                        print(
+                            f"\n=== PHASE PREAMBLE at chip {phase_chip_pos} "
+                            f"hit:{phase_preamble_hits} crc_ok:{crc_ok_packets} "
+                            f"preamble_only:{preamble_only_packets} dist:{phase_dist} "
+                            f"align:{phase_local_chip_pos % 32} template:{phase_best.get('template', 'symbol')} ==="
+                        )
+                        print(f"Phase symbols: {[v for v,_ in phase_syms[phase_sym_pos:phase_sym_pos+12]]}")
+                        print(f"Phase distances: {[d for _,d in phase_syms[phase_sym_pos:phase_sym_pos+12]]}")
+                        print(f"Phase chips: {phase_chip_buf[phase_chip_pos:phase_chip_pos+96]}")
+                    phase_chip_buf = ""
 
         if len(chip_buf) >= MIN_FRAME_SYMBOLS * 32:
             frame, chip_pos, syms, sym_pos = find_frame_window(chip_buf)
@@ -559,9 +647,11 @@ try:
             preview = chip_buf[:100] if chip_buf else "(empty)"
             ones, transitions = chip_stats(chip_buf[-DIAG_SCAN_CHIPS:])
             phase_ones, phase_transitions = chip_stats(phase_chip_buf[-DIAG_SCAN_CHIPS:])
+            best_text = "none" if phase_best_dist is None else str(phase_best_dist)
             print(f"[msgs:{zmq_msgs} phase_msgs:{phase_zmq_msgs} chips:{len(chip_buf)} phase_chips:{len(phase_chip_buf)} "
                   f"crc_ok:{crc_ok_packets} preamble_only:{preamble_only_packets} "
-                  f"phase_preamble:{phase_preamble_hits} "
+                  f"phase_preamble:{phase_preamble_hits} phase_best_dist:{best_text} "
+                  f"phase_streak:{phase_candidate_streak} "
                   f"ones:{ones:.3f} trans:{transitions:.3f} "
                   f"phase_ones:{phase_ones:.3f} phase_trans:{phase_transitions:.3f} raw:{preview}]")
             last_report = time.time()

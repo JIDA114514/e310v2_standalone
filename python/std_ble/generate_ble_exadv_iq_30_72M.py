@@ -13,11 +13,15 @@ from bsp_string import bsp_string
 BLE_PREAMBLE_AND_AA = [0xAA, 0xD6, 0xBE, 0x89, 0x8E]
 BLE_PDU_TYPE_ADV_EXT_IND = 0x07
 BLE_EXT_HDR_FLAG_ADVA = 0x01
-BLE_EXT_HDR_FLAG_ADI = 0x04
+BLE_EXT_HDR_FLAG_CTE_INFO = 0x04
+BLE_EXT_HDR_FLAG_ADI = 0x08
 BLE_EXT_HDR_FLAG_AUX_PTR = 0x10
 BLE_EXT_ADV_MODE_NONCONN_NONSCAN = 0x00
 BLE_AUX_PHY_LE_1M = 0x01
 BLE_EXT_ADV_MAX_PDU_PAYLOAD = 255
+DEFAULT_AUX_OFFSET_US = 1500
+DEFAULT_SECONDARY_PRE_PAD_US = 0.0
+BLE_AUX_OFFSET_UNIT_30_US_MAX_US = 245_700
 DEFAULT_MAC = "FF:22:33:44:55:FF"
 DEFAULT_LOCAL_NAME = "SDR_EXADV"
 DEFAULT_SID = 0
@@ -57,14 +61,16 @@ def build_aux_ptr(channel, offset_us, ca=0, phy=BLE_AUX_PHY_LE_1M):
         raise ValueError("secondary channel must be a BLE data channel in 0..36")
     if offset_us <= 0:
         raise ValueError("aux offset must be positive")
-    if offset_us % 300 == 0:
-        offset_units = 1
-        aux_offset = offset_us // 300
-    elif offset_us % 30 == 0:
+    if offset_us < BLE_AUX_OFFSET_UNIT_30_US_MAX_US:
+        if offset_us % 30 != 0:
+            raise ValueError("aux offset below 245700 us must be a multiple of 30 us")
         offset_units = 0
         aux_offset = offset_us // 30
     else:
-        raise ValueError("aux offset must be a multiple of 30 us or 300 us")
+        if offset_us % 300 != 0:
+            raise ValueError("aux offset at or above 245700 us must be a multiple of 300 us")
+        offset_units = 1
+        aux_offset = offset_us // 300
     if not 0 < aux_offset < (1 << 13):
         raise ValueError("encoded AuxOffset must fit in 13 bits and be non-zero")
 
@@ -156,7 +162,7 @@ def get_gaussian_filter(bt, sps, span=4):
     return h / np.sum(h)
 
 
-def ble_bits_to_iq_30_72m(bits, bt=0.5, post_pad_us=1000.0):
+def ble_bits_to_iq_30_72m(bits, bt=0.5, pre_pad_us=0.0, post_pad_us=1000.0):
     symbols = np.array(list(bits), dtype=np.float32) * 2 - 1
     sps_high = 768
     nrz_high = np.repeat(symbols, sps_high)
@@ -172,9 +178,12 @@ def ble_bits_to_iq_30_72m(bits, bt=0.5, post_pad_us=1000.0):
     q_int = np.round(q_out * 10000).astype(int)
     iq_uint32 = ((q_int & 0xFFFF) << 16) | (i_int & 0xFFFF)
     iq_uint32 = np.repeat(iq_uint32, 2)
-    pad_words = int(round(post_pad_us * 1e-6 * 30_720_000)) * 2
-    if pad_words > 0:
-        iq_uint32 = np.concatenate([iq_uint32, np.zeros(pad_words, dtype=iq_uint32.dtype)])
+    pre_pad_words = int(round(pre_pad_us * 1e-6 * 30_720_000)) * 2
+    post_pad_words = int(round(post_pad_us * 1e-6 * 30_720_000)) * 2
+    if pre_pad_words > 0:
+        iq_uint32 = np.concatenate([np.zeros(pre_pad_words, dtype=iq_uint32.dtype), iq_uint32])
+    if post_pad_words > 0:
+        iq_uint32 = np.concatenate([iq_uint32, np.zeros(post_pad_words, dtype=iq_uint32.dtype)])
     return iq_uint32
 
 
@@ -212,7 +221,7 @@ def main():
     parser.add_argument("--name", default=DEFAULT_LOCAL_NAME, help="Complete Local Name in AUX_ADV_IND")
     parser.add_argument("--channel", type=int, default=37, help="primary BLE advertising channel")
     parser.add_argument("--secondary-channel", type=int, default=3, help="BLE data channel encoded in AuxPtr")
-    parser.add_argument("--aux-offset-us", type=int, default=6990, help="AuxPtr offset encoded in primary ADV_EXT_IND")
+    parser.add_argument("--aux-offset-us", type=int, default=DEFAULT_AUX_OFFSET_US, help="AuxPtr offset from primary ADV_EXT_IND start in us")
     parser.add_argument(
         "--timing-debug-same-channel",
         action="store_true",
@@ -228,6 +237,7 @@ def main():
     )
     parser.add_argument("--bt", type=float, default=0.5, help="BLE Gaussian BT")
     parser.add_argument("--post-pad-us", type=float, default=1000.0, help="zero-IQ silence appended after each packet")
+    parser.add_argument("--secondary-pre-pad-us", type=float, default=DEFAULT_SECONDARY_PRE_PAD_US, help="zero-IQ silence prepended before AUX_ADV_IND for RF settle")
     parser.add_argument(
         "--output",
         default=os.path.join(SCRIPT_DIR, "ble_exadv_waveform_30_72M.h"),
@@ -268,6 +278,7 @@ def main():
     secondary_iq = ble_bits_to_iq_30_72m(
         list(bsp_string.bytes_to_bits_lsb(secondary_ll_payload)),
         bt=args.bt,
+        pre_pad_us=args.secondary_pre_pad_us,
         post_pad_us=args.post_pad_us,
     )
     decoded_aux = decode_aux_ptr(aux_ptr)
@@ -303,6 +314,7 @@ def main():
         f"secondary_crc: {bytes_hex(secondary_crc)}",
         f"primary_air_us: {packet_air_us(primary_ll_payload)}",
         f"secondary_air_us: {packet_air_us(secondary_ll_payload)}",
+        f"secondary_pre_pad_us: {args.secondary_pre_pad_us:g}",
         f"primary_words: {len(primary_iq)}",
         f"secondary_words: {len(secondary_iq)}",
         f"post_pad_us: {args.post_pad_us:g}",
@@ -345,6 +357,7 @@ def main():
     print(f"Secondary BLE CRC: {bytes_hex(secondary_crc)}")
     print(f"Primary air time: {packet_air_us(primary_ll_payload)} us")
     print(f"Secondary air time: {packet_air_us(secondary_ll_payload)} us")
+    print(f"Secondary pre-pad: {args.secondary_pre_pad_us:g} us")
     print(f"Generated {len(primary_iq)} primary words and {len(secondary_iq)} secondary words -> {args.output}")
 
 

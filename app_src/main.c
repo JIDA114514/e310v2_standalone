@@ -97,6 +97,7 @@ static uint8_t out_buff[MAX_SIZE_BASE_ADDR];
 #include "string.h"
 #include "xuartps_hw.h"
 #include "ble.h"
+#include "ble_exadv.h"
 #endif
 
 /******************************************************************************/
@@ -1007,6 +1008,7 @@ int main(void)
 	while (1)
 	{
 		ble_tx_task_tick();
+		ble_exadv_task_tick();
 		ble_rx_service_poll();
 		if(XUartPs_IsReceiveData(XPAR_XUARTPS_0_BASEADDR)){
 			console_get_command(received_cmd);
@@ -1014,6 +1016,8 @@ int main(void)
 			for (cmd = 0; cmd < cmd_no; cmd++)
 			{
 				param_no = 0;
+				for (int param_idx = 0; param_idx < 5; param_idx++)
+					param[param_idx] = 0;
 				cmd_type = console_check_commands(received_cmd, cmd_list[cmd].name,param, &param_no);
 				if (cmd_type == UNKNOWN_CMD)
 				{
