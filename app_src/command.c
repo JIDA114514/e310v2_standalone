@@ -59,6 +59,7 @@
 
 static void ble_exadv_tx_cmd(double *param, char param_no);
 static void ble_exadv_stop_cmd(double *param, char param_no);
+static void ble_exadv_secondary_test_cmd(double *param, char param_no);
 
 /******************************************************************************/
 /************************ Constants Definitions *******************************/
@@ -122,7 +123,8 @@ command cmd_list[] = {
 	{"dma_tx_demo?", "Sends data in dma", "", dma_tx_demo},
 	{"ble_tx_demo?", "Sends BLE data in dma", "", ble_tx_demo},
 	{"ble_tx_adv_name?", "Generate and send BLE ADV name SDR_BLE", "", ble_tx_adv_name_demo},
-	{"ble_exadv_tx?", "Start BLE extended advertising loop: primary ch39 then secondary ch3", "ble_exadv_tx? 6990 20000 0", ble_exadv_tx_cmd},
+	{"ble_exadv_tx?", "Start BLE extended advertising same-channel diagnostic: primary ch37 then secondary ch37", "ble_exadv_tx? 30000 40000 0", ble_exadv_tx_cmd},
+	{"ble_exadv_sec_test?", "Continuously transmit BLE AUX_ADV_IND diagnostic waveform on ch37", "", ble_exadv_secondary_test_cmd},
 	{"ble_exadv_stop?", "Stop BLE extended advertising loop", "", ble_exadv_stop_cmd},
 	{"ble_tx_stop?", "stop BLE TX demo, and set DDS", "", ble_tx_stop},
 	{"change_freq?", "change BLE TX chan to next freq", "", change_freq},
@@ -143,9 +145,10 @@ extern const uint32_t custom_iq_lut[768 * 2] __attribute__((aligned));
 // extern const uint32_t neg_custom_iq_lut[768 * 2];
 extern const uint32_t ble_iq_ch37[13764] __attribute__((aligned));
 extern const uint32_t ble_iq_ch38[13764] __attribute__((aligned));
-extern const uint32_t ble_iq_ch39[13272] __attribute__((aligned));
+extern const uint32_t ble_iq_ch39[13764] __attribute__((aligned));
 extern const uint32_t bluebee_iq_ch39[145982] __attribute__((aligned(64)));
-//extern const uint32_t ble_exadv_primary_iq_ch37[72746] __attribute__((aligned(64)));
+extern const uint32_t ble_exadv_primary_iq_ch37[69796] __attribute__((aligned(64)));
+extern const uint32_t ble_exadv_secondary_iq_ch3[78152] __attribute__((aligned(64)));
 static struct axi_dma_transfer transfer = {
 	// Number of bytes to write/read; double because of 2T2R mode
 	.size = sizeof(custom_iq_lut),
@@ -171,9 +174,10 @@ static XTime last_hop_time = 0;
 
 enum dma_context {
 //	BLE_ADV_CH39,
-	ZIGEE_PREM_CH26,
+	ZIGBEE_PREM_CH26,
 //	SINWAVE,
-	BLUEBEE_CH39
+	BLUEBEE_CH39,
+	EXADV_PRI_37
 };
 
 static uint8_t context = 0;
@@ -267,18 +271,18 @@ void dma_tx_demo(double *param, char param_no)
 	Xil_DCacheFlush();
 	/* Flush cache data. */
 //	Xil_DCacheInvalidateRange((uintptr_t)ble_iq_ch39, sizeof(ble_iq_ch39));
-	Xil_DCacheFlushRange((uintptr_t)bluebee_iq_ch39, sizeof(bluebee_iq_ch39));
+	Xil_DCacheFlushRange((uintptr_t)ble_exadv_primary_iq_ch37, sizeof(ble_exadv_primary_iq_ch37));
 	Xil_DCacheFlushRange((uintptr_t)zigbee_iq, sizeof(zigbee_iq));
 	/* Transfer the data. */
 	axi_dac_write(ad9361_phy->tx_dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
 	transfer.cyclic = CYCLIC;
-	transfer.size = sizeof(bluebee_iq_ch39);
-	transfer.src_addr = (uintptr_t)bluebee_iq_ch39;
+	transfer.size = sizeof(ble_exadv_primary_iq_ch37);
+	transfer.src_addr = (uintptr_t)ble_exadv_primary_iq_ch37;
 	int ret = axi_dmac_transfer_start(tx_dmac, &transfer);
 	if (ret == 0)
 	{
 		printf("start transfer!\n");
-		context = BLUEBEE_CH39;
+		context = EXADV_PRI_37;
 	}
 	else
 	{
@@ -295,13 +299,20 @@ void change_dma_context(double *param, char param_no){
 	if(context == BLUEBEE_CH39){
 		transfer.size = sizeof(zigbee_iq);
 		transfer.src_addr = (uintptr_t)zigbee_iq;
-		context = ZIGEE_PREM_CH26;
+		context = ZIGBEE_PREM_CH26;
 		printf("dma set to zigbee\n");
+	}
+	else if(context == ZIGBEE_PREM_CH26){
+		transfer.size = sizeof(ble_exadv_primary_iq_ch37);
+		transfer.src_addr = (uintptr_t)ble_exadv_primary_iq_ch37;
+		context = EXADV_PRI_37;
+		printf("dma set to exadv\n");
 	}
 	else{
 		transfer.size = sizeof(bluebee_iq_ch39);
 		transfer.src_addr = (uintptr_t)bluebee_iq_ch39;
 		context = BLUEBEE_CH39;
+		ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH39);
 		printf("dma set to BlueBee\n");
 	}
 	int ret = axi_dmac_transfer_start(tx_dmac, &transfer);
@@ -358,6 +369,47 @@ static void ble_exadv_tx_cmd(double *param, char param_no)
 	ble_exadv_tx_demo(param, param_no);
 }
 
+static void ble_exadv_secondary_test_cmd(double *param, char param_no)
+{
+	(void)param;
+	(void)param_no;
+	int ret;
+
+	is_ble_tx_active = 0;
+	ble_exadv_stop(0);
+	if (tx_dmac == NULL || ad9361_phy == NULL || ad9361_phy->tx_dac == NULL) {
+		printf("ble_exadv_sec_test?: dma/rf path not ready\n");
+		return;
+	}
+
+	ret = axi_dac_set_datasel(ad9361_phy->tx_dac, -1, AXI_DAC_DATA_SEL_DMA);
+	ret |= no_os_gpio_set_value(ad9361_phy->gpio_desc_tx1_ctrl_h, 0);
+	ret |= no_os_gpio_set_value(ad9361_phy->gpio_desc_tx1_ctrl_l, 1);
+	ret |= no_os_gpio_set_value(ad9361_phy->gpio_desc_tx2_ctrl_h, 0);
+	ret |= no_os_gpio_set_value(ad9361_phy->gpio_desc_tx2_ctrl_l, 1);
+	ret |= ad9361_set_tx_rf_port_output(ad9361_phy, TXB);
+	ret |= ad9361_set_tx_lo_freq(ad9361_phy, BLE_EXADV_SECONDARY_FREQ_HZ);
+	if (ret < 0) {
+		printf("ble_exadv_sec_test?: tx path setup failed\n");
+		return;
+	}
+	no_os_mdelay(1);
+
+	Xil_DCacheFlush();
+	Xil_DCacheFlushRange((uintptr_t)ble_exadv_secondary_iq_ch3,
+	                     sizeof(ble_exadv_secondary_iq_ch3));
+	axi_dmac_transfer_stop(tx_dmac);
+	axi_dac_write(ad9361_phy->tx_dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
+	transfer.cyclic = CYCLIC;
+	transfer.size = sizeof(ble_exadv_secondary_iq_ch3);
+	transfer.src_addr = (uintptr_t)ble_exadv_secondary_iq_ch3;
+	ret = axi_dmac_transfer_start(tx_dmac, &transfer);
+	if (ret == 0)
+		printf("BLE EXT ADV secondary test: cyclic same-channel AUX_ADV_IND on ch37 2402 MHz\n");
+	else
+		printf("BLE EXT ADV secondary test: dma start failed\n");
+}
+
 static void ble_exadv_stop_cmd(double *param, char param_no)
 {
 	(void)param;
@@ -378,15 +430,15 @@ void ble_tx_stop(double *param, char param_no){
 
 void change_freq(double *param, char param_no){
 	ble_exadv_stop(0);
-	// current_channel++;
+	// current_channel = 38;
 	if (current_channel == 37)
 	{
 		/* code */
-		current_channel++;
-		printf("current channel: 39\n");
+		current_channel = 38;
+		printf("current channel: 38\n");
 	}
 	else if(current_channel == 38){
-		current_channel++;
+		current_channel = 38;
 		printf("current channel: 37\n");
 	}
 	else{
@@ -405,24 +457,26 @@ void ble_tx_task_tick(void){
 
 	if((current_time - last_hop_time) >= HOP_INTERVAL_TICKS){
 		axi_dmac_transfer_stop(tx_dmac);
-		//  long long offset = (rand() % 20) * 1000;
 		uint32_t offset = 0;
+
+		/* Cycle through channels: 37 → 38 → 39 → 37 → … */
 		if(current_channel == 37){
+			current_channel = 38;
+			transfer.size = sizeof(ble_iq_ch38);
 			transfer.src_addr = (uintptr_t)ble_iq_ch38;
-			// printf("channel 38 running\n");
 			ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH38 - offset);
-			// current_channel++;
 		}
 		else if(current_channel == 38){
+			current_channel = 39;
+			transfer.size = sizeof(ble_iq_ch39);
 			transfer.src_addr = (uintptr_t)ble_iq_ch39;
-			// printf("channel 39 running\n");
 			ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH39 - offset);
-			// current_channel++;
 		}
 		else{
+			current_channel = 37;
+			transfer.size = sizeof(ble_iq_ch37);
 			transfer.src_addr = (uintptr_t)ble_iq_ch37;
 			ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH37 - offset);
-			// current_channel = 37;
 		}
 		no_os_mdelay(1);	//make sure tx_lo_freq stable
 		axi_dmac_transfer_start(tx_dmac, &transfer);

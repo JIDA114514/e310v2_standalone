@@ -148,7 +148,7 @@ class BlePacketDetector:
         info = self._parse_ext_adv_info(payload)
         flags = info["flags"]
         adv_data = info["adv_data"]
-        if (flags & 0x11) == 0x11:
+        if (flags & 0x10) and not adv_data:
             return "primary", info
         if (flags & 0x08) and adv_data:
             return "secondary", info
@@ -177,19 +177,19 @@ class BlePacketDetector:
         delta_bytes = packet_start - primary["start"]
         delta_us_from_preamble = self._byte_delta_us(delta_bytes)
         delta_us_from_primary_end = delta_us_from_preamble - primary["air_us"]
-        error_us = delta_us_from_primary_end - primary["aux_offset_us"]
+        error_us = delta_us_from_preamble - primary["aux_offset_us"]
         common = (
             f"primary=#{primary['packet_no']} secondary=#{packet_no} "
             f"delta_bytes={delta_bytes} "
             f"delta_us_from_preamble={delta_us_from_preamble:.1f} "
             f"delta_us_from_primary_end={delta_us_from_primary_end:.1f} "
             f"auxptr_ch={primary['aux_channel']} auxptr_offset_us={primary['aux_offset_us']} "
-            f"error_vs_aux_us={error_us:.1f}"
+            f"error_vs_aux_from_preamble_us={error_us:.1f}"
         )
 
         if abs(error_us) > self.pair_window_us:
             self.unpaired_secondaries += 1
-            if delta_us_from_primary_end > primary["aux_offset_us"] + self.pair_window_us:
+            if delta_us_from_preamble > primary["aux_offset_us"] + self.pair_window_us:
                 self.last_primary = None
             return (
                 f"unpaired_secondary[{self.unpaired_secondaries}] {common} "

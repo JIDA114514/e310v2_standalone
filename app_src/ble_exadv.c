@@ -21,6 +21,9 @@ extern void Xil_DCacheFlushRange(uintptr_t adr, uint32_t len);
 #define BLE_EXADV_MIN_AUX_FRAME_SPACE_US (300u)
 #define BLE_EXADV_LO_SWITCH_EST_US (700u)
 #define BLE_EXADV_SECONDARY_START_LEAD_US (0u)
+#define BLE_EXADV_ARRAY_WORDS(array_) ((uint32_t)(sizeof(array_) / sizeof((array_)[0])))
+#define BLE_EXADV_PRIMARY_CH37_WORDS BLE_EXADV_ARRAY_WORDS(ble_exadv_primary_iq_ch37)
+#define BLE_EXADV_SECONDARY_CH3_WORDS BLE_EXADV_ARRAY_WORDS(ble_exadv_secondary_iq_ch3)
 
 #ifndef BLE_EXADV_TIMING_DEBUG
 #define BLE_EXADV_TIMING_DEBUG (0)
@@ -36,7 +39,23 @@ static uint32_t ble_exadv_primary_total_us = 0u;
 static uint32_t ble_exadv_primary_pad_us = 0u;
 static uint32_t ble_exadv_secondary_total_us = 0u;
 static uint32_t ble_exadv_secondary_start_lead_us = 0u;
+static uint32_t ble_exadv_primary_index = 0u;
 static XTime ble_exadv_next_event = 0;
+#if BLE_EXADV_TIMING_DEBUG
+static uint32_t ble_exadv_emit_count = 0u;
+#endif
+
+struct ble_exadv_primary_waveform {
+    const uint32_t *iq;
+    uint64_t freq_hz;
+    uint8_t channel;
+};
+
+static const struct ble_exadv_primary_waveform ble_exadv_primaries[] = {
+    {ble_exadv_primary_iq_ch37, BLE_EXADV_PRIMARY_CH37_FREQ_HZ, 37u},
+};
+
+#define BLE_EXADV_PRIMARY_COUNT ((uint32_t)(sizeof(ble_exadv_primaries) / sizeof(ble_exadv_primaries[0])))
 
 static XTime ble_exadv_ticks_from_us(uint32_t us)
 {
@@ -137,9 +156,9 @@ static void ble_exadv_flush_iq(void)
 #ifdef XILINX_PLATFORM
     Xil_DCacheFlush();
     Xil_DCacheFlushRange((uintptr_t)ble_exadv_primary_iq_ch37,
-                         BLE_EXADV_PRIMARY_WORDS * sizeof(uint32_t));
+                         BLE_EXADV_PRIMARY_CH37_WORDS * sizeof(uint32_t));
     Xil_DCacheFlushRange((uintptr_t)ble_exadv_secondary_iq_ch3,
-                         BLE_EXADV_SECONDARY_WORDS * sizeof(uint32_t));
+                         BLE_EXADV_SECONDARY_CH3_WORDS * sizeof(uint32_t));
 #endif
 }
 
@@ -157,9 +176,9 @@ static int ble_exadv_start_dma(const uint32_t *iq_words, uint32_t word_count)
     return axi_dmac_transfer_start(tx_dmac, &transfer);
 }
 
-static int ble_exadv_set_primary_lo(void)
+static int ble_exadv_set_primary_lo(uint32_t primary_index)
 {
-    int ret = ad9361_set_tx_lo_freq(ad9361_phy, BLE_EXADV_PRIMARY_FREQ_HZ);
+    int ret = ad9361_set_tx_lo_freq(ad9361_phy, ble_exadv_primaries[primary_index].freq_hz);
 
     if (ret < 0)
         printf("ble exadv primary lo tune failed\n");
@@ -171,15 +190,18 @@ static int ble_exadv_set_primary_lo(void)
 
 static int ble_exadv_set_secondary_lo(void)
 {
-#if BLE_EXADV_SECONDARY_FREQ_HZ == BLE_EXADV_PRIMARY_FREQ_HZ
+#if BLE_EXADV_SECONDARY_FREQ_HZ == BLE_EXADV_PRIMARY_CH37_FREQ_HZ
     return 0;
 #else
     int ret = ad9361_set_tx_lo_freq(ad9361_phy, BLE_EXADV_SECONDARY_FREQ_HZ);
 
-    if (ret < 0)
+    if (ret < 0) {
         printf("ble exadv secondary lo tune failed\n");
-
-    return ret;
+        return ret;
+    }
+    /* AuxOffset leaves enough room for a conservative primary-to-secondary retune. */
+    no_os_mdelay(1);
+    return 0;
 #endif
 }
 
@@ -187,6 +209,7 @@ void ble_exadv_stop(uint8_t restore_dds)
 {
     ble_exadv_active = 0u;
     ble_exadv_next_event = 0;
+    ble_exadv_primary_index = 0u;
 
     if (tx_dmac != NULL)
         axi_dmac_transfer_stop(tx_dmac);
@@ -218,16 +241,28 @@ int ble_exadv_start_with_timing(uint32_t aux_offset_us, uint32_t interval_us,
     ble_exadv_stop(0);
 
     ble_exadv_aux_offset_us = aux_offset_us;
-    ble_exadv_primary_total_us = ble_exadv_words_to_us(BLE_EXADV_PRIMARY_WORDS);
+    ble_exadv_primary_total_us = ble_exadv_words_to_us(BLE_EXADV_PRIMARY_CH37_WORDS);
     ble_exadv_primary_pad_us = ble_exadv_primary_total_us > BLE_EXADV_PRIMARY_AIR_US ?
                                ble_exadv_primary_total_us - BLE_EXADV_PRIMARY_AIR_US : 0u;
-    ble_exadv_secondary_total_us = ble_exadv_words_to_us(BLE_EXADV_SECONDARY_WORDS);
+    ble_exadv_secondary_total_us = ble_exadv_words_to_us(BLE_EXADV_SECONDARY_CH3_WORDS);
 
+    /*
+     * AuxOffset is from the start of the packet containing the AuxPtr.
+     * The encoded value must still be at least packet length + T_MAFS.
+     */
     if (ble_exadv_aux_offset_us <
         BLE_EXADV_PRIMARY_AIR_US + BLE_EXADV_MIN_AUX_FRAME_SPACE_US) {
         printf("BLE EXT ADV error: aux_delay_us must be at least primary_air + T_MAFS (%lu us)\n",
                (unsigned long)(BLE_EXADV_PRIMARY_AIR_US +
                                BLE_EXADV_MIN_AUX_FRAME_SPACE_US));
+        return -1;
+    }
+
+    if (BLE_EXADV_PRIMARY_COUNT > 1u &&
+        ble_exadv_aux_offset_us <
+        (BLE_EXADV_PRIMARY_COUNT - 1u) * BLE_EXADV_PRIMARY_SPACING_US +
+        BLE_EXADV_PRIMARY_AIR_US + BLE_EXADV_MIN_AUX_FRAME_SPACE_US) {
+        printf("BLE EXT ADV error: aux_delay_us must leave room for all primary PDUs in one event\n");
         return -1;
     }
 
@@ -238,8 +273,9 @@ int ble_exadv_start_with_timing(uint32_t aux_offset_us, uint32_t interval_us,
                (unsigned long)BLE_EXADV_LO_SWITCH_EST_US);
     }
 
-    max_secondary_start_lead_us = ble_exadv_aux_offset_us > ble_exadv_primary_total_us ?
-                                  ble_exadv_aux_offset_us - ble_exadv_primary_total_us : 0u;
+    max_secondary_start_lead_us =
+        ble_exadv_aux_offset_us > ble_exadv_primary_total_us ?
+        ble_exadv_aux_offset_us - ble_exadv_primary_total_us : 0u;
     if (secondary_start_lead_us > max_secondary_start_lead_us) {
         printf("BLE EXT ADV warning: secondary_start_lead clamped from %lu us to %lu us\n",
                (unsigned long)secondary_start_lead_us,
@@ -266,7 +302,8 @@ int ble_exadv_start_with_timing(uint32_t aux_offset_us, uint32_t interval_us,
     }
     ble_exadv_flush_iq();
     axi_dmac_transfer_stop(tx_dmac);
-    if (ble_exadv_set_primary_lo() < 0) {
+    ble_exadv_primary_index = 0u;
+    if (ble_exadv_set_primary_lo(ble_exadv_primary_index) < 0) {
         ble_exadv_stop(1);
         return -1;
     }
@@ -291,33 +328,80 @@ static int ble_exadv_emit_once(void)
     XTime secondary_trigger;
     XTime secondary_start;
     XTime now;
+    uint32_t primary_index;
 #if BLE_EXADV_TIMING_DEBUG
     XTime primary_dma_begin;
+    XTime primary_starts[BLE_EXADV_PRIMARY_COUNT];
     XTime secondary_lo_begin;
     XTime secondary_lo_end;
     XTime secondary_dma_begin;
     XTime secondary_dma_end;
     XTime primary_lo_begin;
     XTime primary_lo_end;
+    XTime event_done;
     uint32_t primary_guard_late_us;
+    uint32_t primary_start_late_sum_us = 0u;
+    uint32_t primary_start_late_max_us = 0u;
     uint32_t secondary_wait_late_us;
     uint32_t secondary_start_late_us;
+    uint32_t emit_no;
+    uint32_t primary_aux_offsets_us[BLE_EXADV_PRIMARY_COUNT];
+    uint32_t actual_aux_delta_us[BLE_EXADV_PRIMARY_COUNT];
+    int32_t aux_window_error_us[BLE_EXADV_PRIMARY_COUNT];
 #endif
 
     axi_dmac_transfer_stop(tx_dmac);
 #if BLE_EXADV_TIMING_DEBUG
     XTime_GetTime(&primary_dma_begin);
+    emit_no = ++ble_exadv_emit_count;
 #endif
-    if (ble_exadv_start_dma(ble_exadv_primary_iq_ch37, BLE_EXADV_PRIMARY_WORDS) < 0) {
-        printf("ble exadv primary dma start failed\n");
-        return -1;
-    }
+    event_start = 0;
+    primary_end = 0;
+    primary_dma_done = 0;
+    secondary_due = 0;
+    secondary_trigger = 0;
+    for (primary_index = 0u; primary_index < BLE_EXADV_PRIMARY_COUNT; primary_index++) {
+        const struct ble_exadv_primary_waveform *primary = &ble_exadv_primaries[primary_index];
+        XTime primary_due;
+        XTime primary_start;
+        uint32_t start_late_us = 0u;
 
-    XTime_GetTime(&event_start);
-    primary_end = ble_exadv_time_after(event_start, BLE_EXADV_PRIMARY_AIR_US);
-    primary_dma_done = ble_exadv_time_after(event_start, ble_exadv_primary_total_us);
-    secondary_due = ble_exadv_time_after(event_start, ble_exadv_aux_offset_us);
-    secondary_trigger = ble_exadv_time_before(secondary_due, ble_exadv_secondary_start_lead_us);
+        if (primary_index > 0u) {
+            if (ble_exadv_set_primary_lo(primary_index) < 0)
+                return -1;
+            primary_due = ble_exadv_time_after(event_start,
+                                              primary_index * BLE_EXADV_PRIMARY_SPACING_US);
+            start_late_us = ble_exadv_udelay_until(primary_due);
+        }
+
+        if (ble_exadv_start_dma(primary->iq, BLE_EXADV_PRIMARY_CH37_WORDS) < 0) {
+            printf("ble exadv primary dma start failed\n");
+            return -1;
+        }
+
+        XTime_GetTime(&primary_start);
+        if (primary_index == 0u) {
+            event_start = primary_start;
+            secondary_due = ble_exadv_time_after(event_start, ble_exadv_aux_offset_us);
+            secondary_trigger = ble_exadv_time_before(secondary_due, ble_exadv_secondary_start_lead_us);
+        }
+
+        primary_end = ble_exadv_time_after(primary_start, BLE_EXADV_PRIMARY_AIR_US);
+        primary_dma_done = ble_exadv_time_after(primary_start, ble_exadv_primary_total_us);
+#if BLE_EXADV_TIMING_DEBUG
+        primary_start_late_sum_us += start_late_us;
+        if (start_late_us > primary_start_late_max_us)
+            primary_start_late_max_us = start_late_us;
+        primary_starts[primary_index] = primary_start;
+        primary_aux_offsets_us[primary_index] =
+            ble_exadv_aux_offset_us - primary_index * BLE_EXADV_PRIMARY_SPACING_US;
+#endif
+
+        if ((primary_index + 1u) < BLE_EXADV_PRIMARY_COUNT) {
+            ble_exadv_udelay_until(primary_dma_done);
+            axi_dmac_transfer_stop(tx_dmac);
+        }
+    }
 
 #if BLE_EXADV_TIMING_DEBUG
     primary_guard_late_us = ble_exadv_udelay_until(ble_exadv_time_after(primary_end, BLE_EXADV_LO_SWITCH_GUARD_US));
@@ -334,9 +418,8 @@ static int ble_exadv_emit_once(void)
 #endif
 
     /*
-     * AuxOffset is measured from the start of the ADV_EXT_IND that contains
-     * AuxPtr. The generated 1 ms primary zero padding remains inside that wait
-     * window while the AD9363 retunes; stop it before the secondary deadline so
+     * The generated 1 ms primary zero padding remains inside the AuxOffset
+     * window while the AD9363 retunes. Stop it before the secondary deadline so
      * the critical path only submits the secondary DMA.
      */
     ble_exadv_udelay_until(primary_dma_done);
@@ -350,7 +433,7 @@ static int ble_exadv_emit_once(void)
 #if BLE_EXADV_TIMING_DEBUG
     XTime_GetTime(&secondary_dma_begin);
 #endif
-    if (ble_exadv_start_dma(ble_exadv_secondary_iq_ch3, BLE_EXADV_SECONDARY_WORDS) < 0) {
+    if (ble_exadv_start_dma(ble_exadv_secondary_iq_ch3, BLE_EXADV_SECONDARY_CH3_WORDS) < 0) {
         printf("ble exadv secondary dma start failed\n");
         return -1;
     }
@@ -359,6 +442,13 @@ static int ble_exadv_emit_once(void)
 #if BLE_EXADV_TIMING_DEBUG
     secondary_dma_end = secondary_start;
     secondary_start_late_us = ble_exadv_late_us(secondary_due);
+    for (primary_index = 0u; primary_index < BLE_EXADV_PRIMARY_COUNT; primary_index++) {
+        actual_aux_delta_us[primary_index] =
+            ble_exadv_elapsed_us(primary_starts[primary_index], secondary_start);
+        aux_window_error_us[primary_index] =
+            (int32_t)actual_aux_delta_us[primary_index] -
+            (int32_t)primary_aux_offsets_us[primary_index];
+    }
 #endif
     ble_exadv_udelay_until(ble_exadv_time_after(secondary_start, ble_exadv_secondary_total_us));
     axi_dmac_transfer_stop(tx_dmac);
@@ -367,18 +457,38 @@ static int ble_exadv_emit_once(void)
 #if BLE_EXADV_TIMING_DEBUG
     XTime_GetTime(&primary_lo_begin);
 #endif
-    if (ble_exadv_set_primary_lo() < 0)
+    ble_exadv_primary_index = 0u;
+    if (ble_exadv_set_primary_lo(ble_exadv_primary_index) < 0)
         return -1;
 #if BLE_EXADV_TIMING_DEBUG
     XTime_GetTime(&primary_lo_end);
-    printf("BLE EXT ADV timing: prim_dma=%lu us sec_lo=%lu us sec_wait_late=%lu us sec_dma=%lu us sec_late=%lu us prim_guard_late=%lu us prim_lo=%lu us\n",
-           (unsigned long)ble_exadv_elapsed_us(primary_dma_begin, event_start),
-           (unsigned long)ble_exadv_elapsed_us(secondary_lo_begin, secondary_lo_end),
-           (unsigned long)secondary_wait_late_us,
-           (unsigned long)ble_exadv_elapsed_us(secondary_dma_begin, secondary_dma_end),
-           (unsigned long)secondary_start_late_us,
-           (unsigned long)primary_guard_late_us,
-           (unsigned long)ble_exadv_elapsed_us(primary_lo_begin, primary_lo_end));
+    XTime_GetTime(&event_done);
+    if (emit_no <= 16u || (emit_no % 50u) == 0u) {
+        printf("BLE EXT ADV timing[%lu]: primary_count=%lu prim_submit=%lu us prim_start_late_sum=%lu us prim_start_late_max=%lu us sec_lo=%lu us sec_wait_late=%lu us sec_submit=%lu us sec_late=%lu us prim_guard_late=%lu us prim_lo=%lu us event_total=%lu us interval=%lu us\n",
+               (unsigned long)emit_no,
+               (unsigned long)BLE_EXADV_PRIMARY_COUNT,
+               (unsigned long)ble_exadv_elapsed_us(primary_dma_begin, event_start),
+               (unsigned long)primary_start_late_sum_us,
+               (unsigned long)primary_start_late_max_us,
+               (unsigned long)ble_exadv_elapsed_us(secondary_lo_begin, secondary_lo_end),
+               (unsigned long)secondary_wait_late_us,
+               (unsigned long)ble_exadv_elapsed_us(secondary_dma_begin, secondary_dma_end),
+               (unsigned long)secondary_start_late_us,
+               (unsigned long)primary_guard_late_us,
+               (unsigned long)ble_exadv_elapsed_us(primary_lo_begin, primary_lo_end),
+               (unsigned long)ble_exadv_elapsed_us(event_start, event_done),
+               (unsigned long)ble_exadv_interval_us);
+        for (primary_index = 0u; primary_index < BLE_EXADV_PRIMARY_COUNT; primary_index++) {
+            printf("BLE EXT ADV timing[%lu] primary[%lu]: ch%u start_from_event_us=%lu actual_aux_delta_us=%lu encoded_aux_offset_us=%lu aux_window_error_us=%ld target=[0,30]us\n",
+                   (unsigned long)emit_no,
+                   (unsigned long)primary_index,
+                   (unsigned int)ble_exadv_primaries[primary_index].channel,
+                   (unsigned long)ble_exadv_elapsed_us(event_start, primary_starts[primary_index]),
+                   (unsigned long)actual_aux_delta_us[primary_index],
+                   (unsigned long)primary_aux_offsets_us[primary_index],
+                   (long)aux_window_error_us[primary_index]);
+        }
+    }
 #endif
     XTime_GetTime(&now);
     while (ble_exadv_next_event <= now)
