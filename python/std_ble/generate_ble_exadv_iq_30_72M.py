@@ -4,15 +4,26 @@
 import argparse
 import os
 import random
+import sys
 
 import numpy as np
 
 from bsp_algorithm import bsp_algorithm
 from bsp_string import bsp_string
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+STD_ZIGBEE_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "ctc_sim", "std_zigbee"))
+
+sys.path.insert(0, STD_ZIGBEE_DIR)
+
+from zigbee_mod import BIT_ORDER, CHIP_MAP, PREAMBLE_BYTES, SFD, bytes_to_bits, crc16_ccitt
+
 
 BLE_PREAMBLE_AND_AA = [0xAA, 0xD6, 0xBE, 0x89, 0x8E]
 BLE_PDU_TYPE_ADV_EXT_IND = 0x07
+BLE_AD_TYPE_MANUFACTURER = 0xFF
+BLE_AD_TYPE_FLAGS = 0x01
+BLE_AD_TYPE_COMPLETE_LOCAL_NAME = 0x09
 BLE_EXT_HDR_FLAG_ADVA = 0x01
 BLE_EXT_HDR_FLAG_CTE_INFO = 0x04
 BLE_EXT_HDR_FLAG_ADI = 0x08
@@ -32,6 +43,8 @@ DEFAULT_SID = 0
 DEFAULT_DID = None
 DEFAULT_PRIMARY_CHANNELS = "39"
 DEFAULT_PRIMARY_SPACING_US = 9000
+DEFAULT_ZIGBEE_PAYLOAD = [0x11, 0x22, 0x33, 0x44]
+PHASE_POLARITIES = ("normal", "inverted")
 DIAGNOSTIC_PROFILES = {
     "baseline-nonconn-nonscan": {
         "adv_mode": BLE_EXT_ADV_MODE_NONCONN_NONSCAN,
@@ -49,7 +62,6 @@ DIAGNOSTIC_PROFILES = {
         "description": "connectable extended advertising display diagnostic with secondary AdvData",
     },
 }
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def parse_mac(text):
@@ -83,6 +95,12 @@ def parse_channel_list(text):
     return channels
 
 
+def parse_byte_list(text):
+    if not text:
+        return []
+    return [int(item, 0) & 0xFF for item in text.replace(",", " ").split()]
+
+
 def ble_channel_freq_mhz(channel):
     if channel == 37:
         return 2402
@@ -101,6 +119,133 @@ def whiten_ll_pdu(pdu, channel):
     crc = bsp_algorithm.bt_crc(pdu, len(pdu))
     whitened = bsp_algorithm.bt_dewhitening(pdu + crc, channel)
     return BLE_PREAMBLE_AND_AA + whitened, crc
+
+
+def whitening_mask(byte_len, channel):
+    return bsp_algorithm.bt_dewhitening([0] * byte_len, channel)
+
+
+def build_zigbee_phy_frame(payload_bytes):
+    mac_len = len(payload_bytes) + 2
+    if mac_len > 127:
+        raise ValueError("ZigBee MAC frame too long for 802.15.4 PHR")
+    fcs = crc16_ccitt(payload_bytes)
+    return [0x00] * PREAMBLE_BYTES + [SFD, mac_len] + list(payload_bytes) + [
+        fcs & 0xFF,
+        (fcs >> 8) & 0xFF,
+    ]
+
+
+def hamming_distance(a, b):
+    return sum(1 for x, y in zip(a, b) if x != y)
+
+
+def constrain_chip_pair(pair_bits):
+    return "11" if pair_bits.count("1") > 1 else "00"
+
+
+def legacy_emulated_chips(chips):
+    return "".join(constrain_chip_pair(chips[i:i + 2]) for i in range(0, 32, 2))
+
+
+def emulation_candidates(chips):
+    candidates = [""]
+    for i in range(0, 32, 2):
+        pair = chips[i:i + 2]
+        choices = (pair,) if pair in ("00", "11") else ("00", "11")
+        candidates = [prefix + choice for prefix in candidates for choice in choices]
+    return candidates
+
+
+def build_bluebee_chip_map(map_mode):
+    if map_mode == "legacy":
+        return [legacy_emulated_chips(chips) for chips in CHIP_MAP]
+    if map_mode != "optimized":
+        raise ValueError(f"unsupported map mode: {map_mode}")
+
+    optimized = []
+    for symbol, chips in enumerate(CHIP_MAP):
+        best = None
+        for candidate in emulation_candidates(chips):
+            intra = hamming_distance(candidate, chips)
+            inter_distances = [
+                hamming_distance(candidate, other)
+                for other_symbol, other in enumerate(CHIP_MAP)
+                if other_symbol != symbol
+            ]
+            min_inter = min(inter_distances)
+            sum_inter = sum(inter_distances)
+            score = (-intra, min_inter, sum_inter, candidate)
+            if best is None or score > best[0]:
+                best = (score, candidate)
+        optimized.append(best[1])
+    return optimized
+
+
+def zigbee_bytes_to_bluebee_bits(zigbee_bytes, ble_chip_map, phase_polarity):
+    frame_bits = bytes_to_bits(zigbee_bytes, bit_order=BIT_ORDER)
+    if len(frame_bits) % 4:
+        frame_bits += "0" * (4 - len(frame_bits) % 4)
+
+    ble_bits = []
+    approx_chips = []
+    for i in range(0, len(frame_bits), 4):
+        symbol = int(frame_bits[i:i + 4], 2)
+        chips = ble_chip_map[symbol]
+        for j in range(0, 32, 2):
+            bit = 1 if chips[j:j + 2] == "11" else 0
+            if phase_polarity == "inverted":
+                bit ^= 1
+            ble_bits.append(bit)
+            approx_chips.extend(("1", "1") if bit else ("0", "0"))
+    return ble_bits, "".join(approx_chips)
+
+
+def bits_to_bytes_lsb(bits):
+    padded = list(bits)
+    pad = (-len(padded)) % 8
+    if pad:
+        padded.extend([0] * pad)
+    return list(bsp_string.bits_to_bytes_lsb(padded)), pad
+
+
+def build_zigbee_source_bytes(embed_mode, payload_bytes):
+    if embed_mode == "payload":
+        return list(payload_bytes), None
+    if embed_mode == "preamble":
+        return [0x00] * PREAMBLE_BYTES + [SFD, 0x00], None
+    if embed_mode == "phy-frame":
+        frame = build_zigbee_phy_frame(payload_bytes)
+        return frame, frame
+    raise ValueError(f"unsupported BlueBee embed mode: {embed_mode}")
+
+
+def chips_to_symbols(chips):
+    symbols = []
+    for i in range(0, len(chips) - len(chips) % 32, 32):
+        chunk = chips[i:i + 32]
+        best_symbol = 0
+        best_dist = 33
+        for symbol, ref in enumerate(CHIP_MAP):
+            dist = hamming_distance(chunk, ref)
+            if dist < best_dist:
+                best_symbol = symbol
+                best_dist = dist
+        symbols.append((best_symbol, best_dist))
+    return symbols
+
+
+def verify_zigbee_projection(frame_bytes, approx_chips):
+    symbols = chips_to_symbols(approx_chips)
+    bits = "".join(f"{symbol:04b}" for symbol, _ in symbols)
+    decoded = []
+    for i in range(0, len(bits) - len(bits) % 8, 8):
+        value = 0
+        for bit_idx, bit in enumerate(bits[i:i + 8]):
+            if bit == "1":
+                value |= 1 << bit_idx
+        decoded.append(value)
+    return decoded[:len(frame_bytes)] == frame_bytes, decoded, [dist for _, dist in symbols]
 
 
 def build_aux_ptr(channel, offset_us, ca=0, phy=BLE_AUX_PHY_LE_1M):
@@ -143,15 +288,46 @@ def build_complete_local_name_adv_data(name):
     ad_len = len(encoded) + 1
     if ad_len > 0xFF:
         raise ValueError("Complete Local Name AD structure is too long")
-    return [ad_len, 0x09] + list(encoded)
+    return [ad_len, BLE_AD_TYPE_COMPLETE_LOCAL_NAME] + list(encoded)
 
 
-def build_adv_data(name, include_flags=True):
+def build_adv_data(
+    name,
+    include_flags=True,
+    bluebee_bytes=None,
+    bluebee_ad_mode="manufacturer",
+    company_id=0xFFFF,
+):
     adv_data = []
     if include_flags:
-        adv_data.extend([0x02, 0x01, 0x06])
+        adv_data.extend([0x02, BLE_AD_TYPE_FLAGS, 0x06])
     adv_data.extend(build_complete_local_name_adv_data(name))
-    return adv_data
+    if bluebee_bytes is None:
+        return adv_data, None, 0
+
+    bluebee_bytes = list(bluebee_bytes)
+    if bluebee_ad_mode == "raw":
+        bluebee_start = len(adv_data)
+        adv_data.extend(bluebee_bytes)
+        return adv_data, bluebee_start, len(bluebee_bytes)
+
+    if bluebee_ad_mode == "manufacturer":
+        bluebee_start = len(adv_data) + 4
+        ad_len = len(bluebee_bytes) + 3
+        if ad_len > 0xFF:
+            raise ValueError("BlueBee manufacturer AD structure is too long for a one-octet AD length field")
+        adv_data.extend(
+            [
+                ad_len,
+                BLE_AD_TYPE_MANUFACTURER,
+                company_id & 0xFF,
+                (company_id >> 8) & 0xFF,
+            ]
+        )
+        adv_data.extend(bluebee_bytes)
+        return adv_data, bluebee_start, len(bluebee_bytes)
+
+    raise ValueError(f"unsupported BlueBee AD mode: {bluebee_ad_mode}")
 
 
 def adv_mode_name(adv_mode):
@@ -250,7 +426,16 @@ def create_ext_primary_ll_payload(mac, primary_channel, secondary_channel, aux_o
     return ll_payload, pdu, crc, aux_ptr, adi
 
 
-def create_ext_secondary_ll_payload(mac, adv_data, channel, sid, did, adv_mode):
+def create_ext_secondary_ll_payload(
+    mac,
+    adv_data,
+    channel,
+    sid,
+    did,
+    adv_mode,
+    bluebee_start=None,
+    bluebee_len=0,
+):
     adi = build_adi(sid, did)
     ext_header = [BLE_EXT_HDR_FLAG_ADVA | BLE_EXT_HDR_FLAG_ADI]
     ext_header.extend(reversed(mac))
@@ -260,8 +445,15 @@ def create_ext_secondary_ll_payload(mac, adv_data, channel, sid, did, adv_mode):
         raise ValueError("secondary extended advertising PDU payload is too long")
 
     pdu = [0x40 | BLE_PDU_TYPE_ADV_EXT_IND, len(ext_payload) & 0xFF] + ext_payload
+    bluebee_pdu_start = None
+    if bluebee_start is not None and bluebee_len:
+        adv_data_start = 2 + 1 + len(ext_header)
+        bluebee_pdu_start = adv_data_start + bluebee_start
+        mask = whitening_mask(len(pdu) + 3, channel)
+        for i in range(bluebee_len):
+            pdu[bluebee_pdu_start + i] ^= mask[bluebee_pdu_start + i]
     ll_payload, crc = whiten_ll_pdu(pdu, channel)
-    return ll_payload, pdu, crc, adi
+    return ll_payload, pdu, crc, adi, bluebee_pdu_start
 
 
 def get_gaussian_filter(bt, sps, span=4):
@@ -324,6 +516,12 @@ def bytes_hex(data):
     return " ".join(f"{x:02X}" for x in data)
 
 
+def distance_range_text(distances):
+    if not distances:
+        return "none"
+    return f"{min(distances)}..{max(distances)}"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate standard BLE extended advertising IQ waveforms")
     parser.add_argument("--mac", default=DEFAULT_MAC, help="BLE advertiser MAC")
@@ -351,6 +549,46 @@ def main():
         action=argparse.BooleanOptionalAction,
         default=None,
         help="override whether to include BLE Flags AD structure before Complete Local Name",
+    )
+    parser.add_argument(
+        "--append-bluebee-zigbee",
+        action="store_true",
+        help="append a BlueBee-emulated ZigBee frame to secondary AdvData",
+    )
+    parser.add_argument(
+        "--zigbee-payload",
+        default=" ".join(f"0x{x:02X}" for x in DEFAULT_ZIGBEE_PAYLOAD),
+        help="ZigBee content bytes for BlueBee mode, e.g. '0x11 0x22 0x33 0x44'",
+    )
+    parser.add_argument(
+        "--bluebee-embed-mode",
+        choices=("payload", "preamble", "phy-frame"),
+        default="phy-frame",
+        help="payload maps only --zigbee-payload; preamble maps 00 00 00 00 A7 00; phy-frame maps the full ZigBee PHY frame",
+    )
+    parser.add_argument(
+        "--bluebee-ad-mode",
+        choices=("manufacturer", "raw"),
+        default="manufacturer",
+        help="secondary AdvData wrapping for BlueBee bytes",
+    )
+    parser.add_argument(
+        "--company-id",
+        type=lambda value: int(value, 0),
+        default=0xFFFF,
+        help="manufacturer company ID used by --bluebee-ad-mode manufacturer",
+    )
+    parser.add_argument(
+        "--map-mode",
+        choices=("legacy", "optimized"),
+        default="optimized",
+        help="BlueBee chip-map mode; optimized follows the margin-based selection used by the BlueBee helper",
+    )
+    parser.add_argument(
+        "--phase-polarity",
+        choices=PHASE_POLARITIES,
+        default="normal",
+        help="invert flips the BlueBee RF chip projection for phase-sign A/B tests",
     )
     parser.add_argument("--bt", type=float, default=0.5, help="BLE Gaussian BT")
     parser.add_argument("--post-pad-us", type=float, default=1000.0, help="zero-IQ silence appended after each packet")
@@ -383,7 +621,39 @@ def main():
     adv_mode = profile["adv_mode"]
     include_flags = profile["include_flags"] if args.include_flags is None else args.include_flags
     secondary_wave_channel = primary_channels[0] if args.timing_debug_same_channel else args.secondary_channel
-    adv_data = build_adv_data(args.name, include_flags=include_flags)
+
+    zigbee_payload = []
+    zigbee_source = []
+    zigbee_frame = None
+    bluebee_bits = []
+    bluebee_bytes = None
+    bluebee_bit_pad = 0
+    zigbee_projection_ok = None
+    zigbee_projection_distances = []
+    on_air_projection_ok = None
+    on_air_projection_distances = []
+    if args.append_bluebee_zigbee:
+        zigbee_payload = parse_byte_list(args.zigbee_payload)
+        zigbee_source, zigbee_frame = build_zigbee_source_bytes(args.bluebee_embed_mode, zigbee_payload)
+        ble_chip_map = build_bluebee_chip_map(args.map_mode)
+        bluebee_bits, approx_chips = zigbee_bytes_to_bluebee_bits(
+            zigbee_source,
+            ble_chip_map=ble_chip_map,
+            phase_polarity=args.phase_polarity,
+        )
+        bluebee_bytes, bluebee_bit_pad = bits_to_bytes_lsb(bluebee_bits)
+        zigbee_projection_ok, _, zigbee_projection_distances = verify_zigbee_projection(
+            zigbee_source,
+            approx_chips,
+        )
+
+    adv_data, bluebee_start, bluebee_len = build_adv_data(
+        args.name,
+        include_flags=include_flags,
+        bluebee_bytes=bluebee_bytes,
+        bluebee_ad_mode=args.bluebee_ad_mode,
+        company_id=args.company_id,
+    )
     primary_infos = []
     for primary_index, primary_channel in enumerate(primary_channels):
         primary_aux_offset_us = args.aux_offset_us - primary_index * args.primary_spacing_us
@@ -422,14 +692,24 @@ def main():
                 "iq": primary_iq,
             }
         )
-    secondary_ll_payload, secondary_pdu, secondary_crc, secondary_adi = create_ext_secondary_ll_payload(
+    secondary_ll_payload, secondary_pdu, secondary_crc, secondary_adi, bluebee_pdu_start = create_ext_secondary_ll_payload(
         mac,
         adv_data,
         channel=secondary_wave_channel,
         sid=args.sid,
         did=did,
         adv_mode=adv_mode,
+        bluebee_start=bluebee_start,
+        bluebee_len=bluebee_len,
     )
+    if args.append_bluebee_zigbee and bluebee_pdu_start is not None:
+        on_air_bluebee = secondary_ll_payload[5 + bluebee_pdu_start:5 + bluebee_pdu_start + bluebee_len]
+        on_air_bits = list(bsp_string.bytes_to_bits_lsb(on_air_bluebee))
+        on_air_chips = "".join("11" if bit else "00" for bit in on_air_bits[:len(bluebee_bits)])
+        on_air_projection_ok, _, on_air_projection_distances = verify_zigbee_projection(
+            zigbee_source,
+            on_air_chips,
+        )
     validate_ext_adv_event(primary_infos, secondary_pdu, secondary_adi, mac, adv_mode)
     secondary_iq = ble_bits_to_iq_30_72m(
         list(bsp_string.bytes_to_bits_lsb(secondary_ll_payload)),
@@ -469,6 +749,26 @@ def main():
         f"secondary_adi_decoded: sid={decoded_secondary_sid} did={decoded_secondary_did}",
         f"adv_data: {bytes_hex(adv_data)}",
         f"local_name: {args.name}",
+        f"bluebee_enabled: {int(args.append_bluebee_zigbee)}",
+        f"bluebee_ad_mode: {args.bluebee_ad_mode if args.append_bluebee_zigbee else 'none'}",
+        f"bluebee_embed_mode: {args.bluebee_embed_mode if args.append_bluebee_zigbee else 'none'}",
+        f"bluebee_company_id: 0x{args.company_id:04X}",
+        f"zigbee_payload: {bytes_hex(zigbee_payload)}",
+        f"zigbee_source: {bytes_hex(zigbee_source)}",
+        f"zigbee_frame: {bytes_hex(zigbee_frame) if zigbee_frame else ''}",
+        f"zigbee_payload_bytes: {len(zigbee_payload)}",
+        f"zigbee_source_bytes: {len(zigbee_source)}",
+        f"zigbee_frame_bytes: {len(zigbee_frame) if zigbee_frame else 0}",
+        f"bluebee_payload_bytes: {bluebee_len}",
+        f"bluebee_bit_pad: {bluebee_bit_pad}",
+        f"bluebee_adv_data_start: {'none' if bluebee_start is None else bluebee_start}",
+        f"bluebee_pdu_start: {'none' if bluebee_pdu_start is None else bluebee_pdu_start}",
+        f"map_mode: {args.map_mode}",
+        f"phase_polarity: {args.phase_polarity}",
+        f"zigbee_projection_ok: {zigbee_projection_ok if zigbee_projection_ok is not None else 'not_run'}",
+        f"zigbee_symbol_distance_range: {distance_range_text(zigbee_projection_distances)}",
+        f"on_air_projection_ok: {on_air_projection_ok if on_air_projection_ok is not None else 'not_run'}",
+        f"on_air_symbol_distance_range: {distance_range_text(on_air_projection_distances)}",
         f"secondary_pdu: {bytes_hex(secondary_pdu)}",
         f"secondary_pdu_payload_bytes: {len(secondary_pdu) - 2}",
         f"secondary_crc: {bytes_hex(secondary_crc)}",
@@ -499,7 +799,7 @@ def main():
         meta.extend(
             [
                 "aux_ptr_channel_diagnostic_only: 1",
-                "diagnostic_note: same_channel_diagnostic=1; secondary RF/whitening is ch37; AuxPtr channel is diagnostic only",
+                f"diagnostic_note: same_channel_diagnostic=1; secondary RF/whitening is ch{secondary_wave_channel}; AuxPtr channel is diagnostic only",
             ]
         )
     output_arrays = [
@@ -545,6 +845,20 @@ def main():
     print(f"Secondary ADI: {bytes_hex(secondary_adi)} SID={decoded_secondary_sid} DID={decoded_secondary_did}")
     print(f"AdvA: {args.mac.upper()} static_random")
     print(f"AdvData: {bytes_hex(adv_data)}")
+    if args.append_bluebee_zigbee:
+        print(f"BlueBee AD mode: {args.bluebee_ad_mode}, embed mode: {args.bluebee_embed_mode}")
+        print(f"ZigBee payload: {bytes_hex(zigbee_payload)}")
+        print(f"ZigBee source: {bytes_hex(zigbee_source)}")
+        if zigbee_frame:
+            print(f"ZigBee frame: {bytes_hex(zigbee_frame)}")
+        print(f"BlueBee bytes: {bluebee_len}")
+        print(f"BlueBee AdvData start: {bluebee_start}")
+        print(f"BlueBee PDU start: {bluebee_pdu_start}")
+        print(f"Map mode: {args.map_mode}, phase polarity: {args.phase_polarity}")
+        print(f"ZigBee projection: {'OK' if zigbee_projection_ok else 'FAIL'}")
+        print(f"On-air projection: {'OK' if on_air_projection_ok else 'FAIL'}")
+        print(f"Symbol distance range: {distance_range_text(zigbee_projection_distances)}")
+        print(f"On-air symbol distance range: {distance_range_text(on_air_projection_distances)}")
     print(f"Secondary PDU: {bytes_hex(secondary_pdu)}")
     print(f"Secondary BLE CRC: {bytes_hex(secondary_crc)}")
     print(f"Primary air time: {packet_air_us(primary_infos[0]['ll_payload'])} us")
