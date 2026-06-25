@@ -2,29 +2,45 @@
 
 ## 总目标
 
-本项目以论文BlueBee为基础，论文原文在/python/ctc_sim/bluebee/文件夹下。最终目标是利用BLE的拓展广播特性，将bluebee负载放在辅助通道的广播包上，以尽可能小的改动实现BLE向zigbee的跨协议通信，并实现性能测量。
+本项目以论文 BlueBee 为基础，论文原文位于 `python/ctc_sim/bluebee/`。目标是利用 BLE 的 extended advertising 双包调度外壳，把 BlueBee 负载放入 secondary 包，在尽可能小的系统改动下实现 BLE 到 ZigBee 的跨协议通信，并完成后续性能测量。
 
 ## 当前目标
 
-实现BLE拓展广播的基础功能，要求在手机上的nrf connect软件中检测到广播包内容，将设备名放在辅助信道上，需要能看到该内容。
+不追求完美实现BLE拓展广播功能，而是借助辅助包的更大可携带数据量，将bluebee生成的完整zigbee帧装入辅助包中，目标是同时实现手机显示BLE完整包，zigbee_rx.py脚本能检测到完整zigbee帧。
 
-# 设备
+## 阶段结论
 
-- 一台搭载zynq7020和ad9363的开发板，在主机电脑上生成好要发送的波形数据后，通过该开发板发射。
-- 一台HackRF One用于辅助开发
+- 旧阶段的“手机显示完整 BLE extended advertising secondary 数据”路线已暂停，不再作为当前主线目标。
+- 当前主线改为利用 BLE exadv 的双包调度外壳，在 `ch39 / 2480 MHz` 上发 primary，并在同频发 BlueBee secondary。
+- 裸机 `ble_exadv_tx?` 现阶段只保留 `aux_delay_us interval_us` 两个参数，默认推荐命令形态为 `ble_exadv_tx? 6990 100000`。
+- 裸机调度以生成头文件中的 primary/secondary IQ、频点和 AuxOffset 元数据为准；不再保留 lead sweep、secondary test、timing debug 路径。
 
-# 项目结构
+## 验收标准
 
-- python/ctc_sim/bluebee文件夹下的内容用于生成和分析bluebee信号，其中generate_bluebee_iq_30_72M.py将生成的zigbee前导码放在BLE的周期广播包中然后生成IQ波形数组
-- python/std_ble文件夹下主要有以下几个功能：
-  - ble_packet_detector.py用于控制HackRF检测生成的BLE数据包
-  - ble_rx.py用于控制HackRF检测BLE广播信号
-  - generate_ble_exadv_iq_30_72M.py用于生成BLE拓展广播包信号
-  - generate_ble_iq_30_72M.py用于生成BLE周期广播信号
-- python/ctc_sim/std_zigbee文件夹用于操纵HackRF模拟zigbee设备和生成可发送的zigbee波形数据
-- hdl/projects/antsdre310/antsdre310.sdk/app/src文件夹下为开发板裸机程序代码
+- 手机 nRF Connect 能看到 `ch39` 上的 primary 广播
+- HackRF 或其他接收链路能够确认 secondary/BlueBee 波形确实在 `2480 MHz`
+- `python/ctc_sim/std_zigbee/zigbee_rx.py` 能检测到完整 ZigBee frame
+- 优先接受标准：
+  - 能输出完整 frame bytes 供比对
+  - 若同时 FCS OK，则视为更强证据
 
-# 注意事项
+## 相关路径
 
-1. 裸机程序代码未被git追踪
-2. 裸机程序代码发生修改后，仅检查代码逻辑和语法，由用户来编译操作
+- `python/ctc_sim/bluebee/`
+  - `generate_bluebee_iq_30_72M.py`：当前主生成脚本
+  - `bluebee_phase_analyze.py`、`bluebee_phase_zigbee_rx.py`：BlueBee/ZigBee 分析辅助工具
+- `python/ctc_sim/std_zigbee/`
+  - `zigbee_rx.py`：当前主接收验证脚本
+- `python/std_ble/`
+  - `ble_exadv_hackrf_sniffer.py`：仍可用于观察 primary/secondary 存在性
+  - `generate_ble_exadv_iq_30_72M.py`：保留旧 BLE exadv 生成逻辑，但不再是当前主线
+- `hdl/projects/antsdre310/antsdre310.sdk/app/src/`
+  - 裸机发射控制代码
+
+## 注意事项
+
+1. 工作区裸机程序代码未被 git 追踪。
+2. 裸机代码修改后，只检查代码逻辑和语法，由用户自行编译和上板。
+3. 以实际规范为准，历史注释和旧实验记录可能已过时。
+4. `python/ctc_sim/stc_zigbee` 是笔误，实际路径是 `python/ctc_sim/std_zigbee`。
+5. `doc/BLE_Core_v5.1.pdf` 可作为 BLE 规范参考，但当前阶段不再以“规范手机跟随 AuxPtr”作为主要成功判据。

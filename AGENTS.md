@@ -6,25 +6,7 @@
 
 ## 当前目标
 
-当前阶段不再追求“手机完整跟随 AuxPtr 并解析 secondary 扩展广播内容”。当前实验目标改为：
-
-- primary 和 secondary/BlueBee 波形都实际在 BLE `ch39 / 2480 MHz` 发射
-- 手机上的 nRF Connect 只需能看到 primary 广播
-- `python/ctc_sim/std_zigbee/zigbee_rx.py` 需要能在 2480 MHz 附近检测到完整 ZigBee 包
-
-当前 extended advertising 的意义仅保留为“主包 + 辅助包”的发射调度外壳；`AuxPtr` 中编码的 secondary channel 目前只作为占位字段，不再作为手机兼容性成功判据。
-
-## 当前实验语义
-
-- `generate_bluebee_iq_30_72M.py --profile extended` 默认生成 primary `ADV_EXT_IND` 和承载 BlueBee 的 secondary `AUX_ADV_IND`
-- 当前默认目标配置：
-  `python3 python/ctc_sim/bluebee/generate_bluebee_iq_30_72M.py --profile extended --channel 39 --secondary-wave-channel 39 --secondary-channel 3 --embed-mode phy-frame --ad-mode manufacturer`
-- 其中：
-  - `--channel 39`：primary 实际发射信道
-  - `--secondary-wave-channel 39`：secondary 实际 whitening 信道和实际 RF 发射频点
-  - `--secondary-channel 3`：仅用于 `AuxPtr` 编码占位，不代表当前实验要求手机跟随到 ch3
-  - `--primary-mode extended`：默认值，保持当前“AuxPtr 指向 ch3、但两个实际波形都在 ch39”的实验语义
-  - `--primary-mode legacy-visible`：仅作为手机可见性调试开关，不是当前默认模式
+不追求完美实现BLE拓展广播功能，而是借助辅助包的更大可携带数据量，将bluebee生成的完整zigbee帧装入辅助包中，目标是同时实现手机显示BLE完整包，zigbee_rx.py脚本能检测到完整zigbee帧。
 
 ## 阶段结论
 

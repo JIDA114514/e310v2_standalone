@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 python/ctc_sim/bluebee/generate_bluebee_zigbee_frame_iq_30_72M.py --zigbee-payload \"0x11 0x22 0x33 0x44\" --leader-bytes 80 --post-pad-us 500 --output /tmp/test_output.h --output-iq /tmp/test_output.c64)",
+      "Bash(pdftotext python/ctc_sim/bluebee/BlueBee.pdf /tmp/bluebee.txt)",
+      "Bash(python3 python/ctc_sim/bluebee/generate_bluebee_zigbee_frame_iq_30_72M.py --zigbee-payload \"0x11 0x22 0x33 0x44\" --post-pad-us 500 --output /tmp/test_output.h --output-iq /tmp/test_output.c64)",
+      "Bash(python3 python/ctc_sim/bluebee/generate_bluebee_zigbee_frame_iq_30_72M.py --help)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -c \"import py_compile; py_compile.compile\\('python/ctc_sim/std_zigbee/zigbee_rx.py', doraise=True\\); print\\('OK'\\)\")",
+      "Bash(python3 python/ctc_sim/std_zigbee/zigbee_rx.py --help)"
+    ]
+  }
+}

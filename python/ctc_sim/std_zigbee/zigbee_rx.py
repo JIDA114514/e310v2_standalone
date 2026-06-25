@@ -140,6 +140,36 @@ def chips_to_symbols(chips):
         symbols.append((best_s, best_d))
     return symbols
 
+
+# ── BlueBee chip maps for phase-difference path ────────────────────────────
+
+BB_CHIP_MAP_OPTIMIZED = [bluebee_optimized_symbol_chips(s) for s in range(16)]
+BB_CHIP_MAP_LEGACY = [bluebee_legacy_symbol_chips(s) for s in range(16)]
+
+
+def chips_to_symbols_bluebee(chips, bb_map):
+    """Decode chips to symbols using a BlueBee chip map (not standard CHIP_MAP)."""
+    symbols = []
+    usable = (len(chips) // 32) * 32
+    for i in range(0, usable, 32):
+        chunk = chips[i:i + 32]
+        best_s, best_d = 0, 33
+        for s, ref in enumerate(bb_map):
+            d = sum(1 for a, b in zip(chunk, ref) if a != b)
+            if d < best_d:
+                best_d, best_s = d, s
+        symbols.append((best_s, best_d))
+    return symbols
+
+
+def build_bluebee_chip_maps():
+    return [
+        ("optimized", BB_CHIP_MAP_OPTIMIZED),
+        ("legacy", BB_CHIP_MAP_LEGACY),
+    ]
+
+BB_CHIP_MAPS = build_bluebee_chip_maps()
+
 def symbols_to_bits(symbols):
     return "".join(f"{s:04b}" for s, _ in symbols)
 
@@ -371,46 +401,109 @@ def find_preamble_only_window(chips):
         return None, -1, None, 0, "none", None
     return None, best[1], best[2], best[3], best[4], f"mismatch:{best[5]} dist:{best[6]}"
 
-def find_phase_preamble_window(chips, max_mismatch=0, max_dist=PHASE_TEMPLATE_MAX_DIST):
-    if len(chips) < PHASE_TEMPLATES[0]["len"]:
-        return None, -1, None, 0, None, None
+
+def decode_frame_from_symbols(syms, sym_pos):
+    """Decode a full Zigbee PHY frame from a symbol array starting at sym_pos.
+
+    This reconstructs the actual frame bytes (not just the fixed preamble-only
+    template), enabling CRC validation for BlueBee-emulated signals.
+    """
+    if syms is None or sym_pos < 0 or sym_pos >= len(syms):
+        return None
+    bits = symbols_to_bits(syms[sym_pos:])
+    data = bits_to_bytes_lsb(bits)
+    frame, _ = find_preamble(data)
+    return frame
+
+def validate_frame(frame):
+    """Validate FCS on a Zigbee frame. Returns (fcs_ok, mac_payload)."""
+    phr_len = frame[PREAMBLE_BYTES + 1]
+    if phr_len < 2 or len(frame) < PREAMBLE_BYTES + 2 + phr_len:
+        return False, []
+    payload_len = phr_len - 2
+    payload_start = PREAMBLE_BYTES + 2
+    mac_payload = frame[payload_start:payload_start + payload_len]
+    fcs_start = payload_start + payload_len
+    fcs_rx = frame[fcs_start] | (frame[fcs_start + 1] << 8)
+    fcs_calc = crc16_ccitt(mac_payload)
+    return fcs_rx == fcs_calc, mac_payload
+
+
+def find_bluebee_detection(chips, bb_chip_maps, max_preamble_dist=PHASE_TEMPLATE_MAX_DIST):
+    """BlueBee-aware preamble detection with full frame extraction and CRC validation.
+
+    Uses BlueBee chip maps to decode symbols, then searches for the preamble
+    at byte level (like bluebee_phase_zigbee_rx.py). Returns a detection dict
+    with full frame and CRC status, or None.
+    """
+    MIN_DETECT_BYTES = PREAMBLE_BYTES + 2  # 6 bytes = 12 symbols
 
     best = None
-    window_len = PHASE_TEMPLATES[0]["len"]
-    window = chips_to_int(chips[:window_len])
+    for mode_name, bb_map in bb_chip_maps:
+        for polarity in ("normal", "inverted"):
+            work_chips = invert_chips(chips) if polarity == "inverted" else chips
+            for chip_align in range(32):
+                syms = chips_to_symbols_bluebee(work_chips[chip_align:], bb_map)
+                if len(syms) < MIN_DETECT_BYTES * 2:
+                    continue
 
-    for pos in range(0, len(chips) - window_len + 1):
-        if pos > 0:
-            window = ((window << 1) & PHASE_TEMPLATES[0]["mask"]) | (1 if chips[pos + window_len - 1] == "1" else 0)
+                # Convert all decoded symbols to bytes
+                bits = symbols_to_bits(syms)
+                data = bits_to_bytes_lsb(bits)
 
-        for template in PHASE_TEMPLATES:
-            dist = (window ^ template["int"]).bit_count()
-            if best is None or dist < best["dist"]:
-                best = {
-                    "score": dist,
-                    "chip_pos": pos,
-                    "align": pos % 32,
-                    "sym_pos": 0,
-                    "mismatch": 0 if dist <= max_dist else 1,
-                    "dist": dist,
-                    "template": template["name"],
-                    "chips": chips[pos:pos+96],
-                }
-            if dist <= max_dist:
-                syms = chips_to_symbols(chips[pos:pos+window_len])
-                best.update({
-                    "symbols": [v for v, _ in syms[:len(PREAMBLE_ONLY_SYMBOLS)]],
-                    "distances": [d for _, d in syms[:len(PREAMBLE_ONLY_SYMBOLS)]],
-                })
-                return PREAMBLE_ONLY_BYTES, pos, syms, 0, dist, best
+                # Search for preamble at byte level
+                preamble_seq = [0x00] * PREAMBLE_BYTES
+                limit = len(data) - MIN_DETECT_BYTES + 1
+                for byte_pos in range(0, max(0, limit)):
+                    if (data[byte_pos:byte_pos + PREAMBLE_BYTES] != preamble_seq
+                            or data[byte_pos + PREAMBLE_BYTES] != SFD):
+                        continue
 
-    if best is not None:
-        syms = chips_to_symbols(chips[best["chip_pos"]:best["chip_pos"]+window_len])
-        best.update({
-            "symbols": [v for v, _ in syms[:len(PREAMBLE_ONLY_SYMBOLS)]],
-            "distances": [d for _, d in syms[:len(PREAMBLE_ONLY_SYMBOLS)]],
-        })
-    return None, -1, None, 0, None, best
+                    sym_pos = byte_pos * 2
+                    preamble_syms = syms[sym_pos:sym_pos + MIN_DETECT_BYTES * 2]
+                    if len(preamble_syms) < MIN_DETECT_BYTES * 2:
+                        continue
+                    preamble_dist = sum(dist for _, dist in preamble_syms)
+                    if preamble_dist > max_preamble_dist:
+                        continue
+
+                    phr_len = data[byte_pos + PREAMBLE_BYTES + 1]
+                    chip_pos = chip_align + sym_pos * 32
+
+                    detection = {
+                        "chip_pos": chip_pos,
+                        "chip_align": chip_align,
+                        "sym_pos": sym_pos,
+                        "byte_pos": byte_pos,
+                        "mode": mode_name,
+                        "polarity": polarity,
+                        "preamble_dist": preamble_dist,
+                        "phr_len": phr_len,
+                        "frame": data[byte_pos:byte_pos + MIN_DETECT_BYTES],
+                        "payload": [],
+                        "fcs_ok": False,
+                        "consume_chips": chip_pos + MIN_DETECT_BYTES * 64,
+                        "symbol_distances": [dist for _, dist in syms[sym_pos:sym_pos + 12]],
+                        "symbols": [symbol for symbol, _ in syms[sym_pos:sym_pos + 12]],
+                    }
+
+                    if 0 < phr_len <= MAX_PHR_LEN:
+                        total_len = PREAMBLE_BYTES + 2 + phr_len
+                        if byte_pos + total_len > len(data):
+                            continue
+                        frame = data[byte_pos:byte_pos + total_len]
+                        fcs_ok, payload = validate_frame(frame)
+                        detection.update({
+                            "frame": frame,
+                            "payload": payload,
+                            "fcs_ok": fcs_ok,
+                            "consume_chips": chip_pos + total_len * 64,
+                        })
+
+                    if best is None or detection["chip_pos"] < best["chip_pos"]:
+                        best = detection
+
+    return best
 
 
 def find_preamble(data):
@@ -463,6 +556,8 @@ parser = argparse.ArgumentParser(description="Receive ZigBee/BlueBee chips from 
 parser.add_argument("--channel", type=int, default=26, help="ZigBee channel, use 26 for BlueBee BLE ch39 or 11 for normal ZigBee ch11")
 parser.add_argument("--no-bluebee-scan", action="store_true", help="disable BlueBee short preamble/SFD side scan")
 parser.add_argument("--no-phase-rx", action="store_true", help="disable fast BlueBee phase-difference ZMQ detector")
+parser.add_argument("--no-standard-scan", action="store_true", default=True, help="disable standard OQPSK full-frame search (CHIP_MAP[0] match); only BlueBee scans are used (default: True)")
+parser.add_argument("--enable-standard-scan", action="store_true", help="re-enable standard OQPSK full-frame search")
 parser.add_argument("--phase-zmq", default="tcp://127.0.0.1:55557", help="ZMQ endpoint for phase-difference BlueBee chips")
 parser.add_argument("--phase-keep-offset", type=int, default=0, help="sample offset 0..4 used by the GNU Radio phase chip sampler")
 parser.add_argument("--phase-scan-period", type=float, default=PHASE_SCAN_PERIOD, help="seconds between fast phase-domain BlueBee scans")
@@ -478,6 +573,7 @@ parser.add_argument("--phase-diag-chips", type=int, default=4096, help="maximum 
 parser.add_argument("--phase-detect-max-mismatch", type=int, default=0, help="maximum symbol mismatch accepted as a phase-domain BlueBee preamble hit")
 parser.add_argument("--phase-detect-max-dist", type=int, default=PHASE_TEMPLATE_MAX_DIST, help="maximum template Hamming distance accepted as a phase-domain BlueBee preamble hit")
 parser.add_argument("--freq-offset", type=float, default=0.0, help="optional RX frequency offset in Hz applied in gr_zigbee")
+parser.add_argument("--duration", type=float, default=0.0, help="run for N seconds then print performance report and exit (0 = run forever)")
 args = parser.parse_args()
 if args.phase_diag and not args.iq_output:
     args.iq_output = "/tmp/zigbee_rx_phase_diag.c64"
@@ -505,8 +601,10 @@ phase_zmq_msgs = 0
 crc_ok_packets = 0
 preamble_only_packets = 0
 phase_preamble_hits = 0
+phase_payload_bytes = 0       # total payload bytes from CRC-OK packets
 phase_candidate_streak = 0
 phase_best_dist = None
+start_time = time.time()
 last_report = time.time()
 last_clear = time.time()
 last_bluebee_scan = 0.0
@@ -553,44 +651,68 @@ try:
                 and time.time() - last_phase_scan >= args.phase_scan_period):
             last_phase_scan = time.time()
             phase_scan_buf = phase_chip_buf[-PHASE_SCAN_CHIPS:]
-            phase_frame, phase_local_chip_pos, phase_syms, phase_sym_pos, phase_dist, phase_best = find_phase_preamble_window(
-                phase_scan_buf,
-                max_mismatch=args.phase_detect_max_mismatch,
-                max_dist=args.phase_detect_max_dist,
+            detection = find_bluebee_detection(
+                phase_scan_buf, BB_CHIP_MAPS,
+                max_preamble_dist=args.phase_detect_max_dist,
             )
-            phase_best_dist = phase_best["dist"] if phase_best is not None else None
-            if phase_frame is None:
+            if detection is None:
                 phase_candidate_streak = 0
+                phase_best_dist = None
             else:
                 phase_candidate_streak += 1
-                phase_chip_pos = len(phase_chip_buf) - len(phase_scan_buf) + phase_local_chip_pos
+                phase_chip_pos = len(phase_chip_buf) - len(phase_scan_buf) + detection["chip_pos"]
+                phase_best_dist = detection["preamble_dist"]
                 if phase_candidate_streak >= args.phase_detect_confirmations:
-                    preamble_only_packets += 1
                     phase_preamble_hits += 1
                     phase_candidate_streak = 0
-                    if args.phase_hit_print_every > 0 and phase_preamble_hits % args.phase_hit_print_every == 0:
+                    if detection["fcs_ok"]:
+                        crc_ok_packets += 1
+                        phase_payload_bytes += len(detection["payload"])
+                    else:
+                        preamble_only_packets += 1
+                    if (args.phase_hit_print_every > 0
+                            and phase_preamble_hits % args.phase_hit_print_every == 0):
+                        fcs_str = "OK" if detection["fcs_ok"] else "FAIL"
                         print(
                             f"\n=== PHASE PREAMBLE at chip {phase_chip_pos} "
                             f"hit:{phase_preamble_hits} crc_ok:{crc_ok_packets} "
-                            f"preamble_only:{preamble_only_packets} dist:{phase_dist} "
-                            f"align:{phase_local_chip_pos % 32} template:{phase_best.get('template', 'symbol')} ==="
+                            f"preamble_only:{preamble_only_packets} FCS:{fcs_str} "
+                            f"dist:{detection['preamble_dist']} "
+                            f"mode:{detection['mode']} polarity:{detection['polarity']} "
+                            f"align:{detection['chip_align']} ==="
                         )
-                        print(f"Phase symbols: {[v for v,_ in phase_syms[phase_sym_pos:phase_sym_pos+12]]}")
-                        print(f"Phase distances: {[d for _,d in phase_syms[phase_sym_pos:phase_sym_pos+12]]}")
+                        print(f"Phase symbols: {detection['symbols']}")
+                        print(f"Phase distances: {detection['symbol_distances']}")
+                        print(f"Frame bytes: {' '.join(f'{b:02X}' for b in detection['frame'])}")
+                        if detection["fcs_ok"]:
+                            print(f"Payload: {' '.join(f'{b:02X}' for b in detection['payload'])}")
                         print(f"Phase chips: {phase_chip_buf[phase_chip_pos:phase_chip_pos+96]}")
-                    phase_chip_buf = ""
+                    consume = phase_chip_pos + detection["consume_chips"] - detection["chip_pos"]
+                    phase_chip_buf = phase_chip_buf[min(consume, len(phase_chip_buf)):]
+
+        # Apply --enable-standard-scan override
+        use_standard_scan = not args.no_standard_scan or args.enable_standard_scan
 
         if len(chip_buf) >= MIN_FRAME_SYMBOLS * 32:
-            frame, chip_pos, syms, sym_pos = find_frame_window(chip_buf)
-            preamble_variant = "full"
+            frame, chip_pos, syms, sym_pos = (None, 0, None, 0)
+            preamble_variant = "none"
             preamble_dist = None
+
+            if use_standard_scan:
+                frame, chip_pos, syms, sym_pos = find_frame_window(chip_buf)
+                preamble_variant = "full"
+                preamble_dist = None
 
             if frame is None and not args.no_bluebee_scan and time.time() - last_bluebee_scan >= BLUEBEE_SCAN_PERIOD:
                 last_bluebee_scan = time.time()
                 scan_buf = chip_buf[-BLUEBEE_SCAN_CHIPS:]
                 frame, local_chip_pos, syms, sym_pos, preamble_variant, preamble_dist = find_preamble_only_window(scan_buf)
-                if frame is not None:
+                if frame is not None or syms is not None:
                     chip_pos = len(chip_buf) - len(scan_buf) + local_chip_pos
+                    # Decode the actual full frame from symbols (not the fixed preamble template)
+                    full_frame = decode_frame_from_symbols(syms, sym_pos)
+                    if full_frame is not None:
+                        frame = full_frame
 
             if frame is None:
                 if args.diag and time.time() - last_diag >= args.diag_period:
@@ -648,17 +770,51 @@ try:
             ones, transitions = chip_stats(chip_buf[-DIAG_SCAN_CHIPS:])
             phase_ones, phase_transitions = chip_stats(phase_chip_buf[-DIAG_SCAN_CHIPS:])
             best_text = "none" if phase_best_dist is None else str(phase_best_dist)
+            # freq-offset tuning hint: target phase_ones=0.5
+            if phase_ones > 0.55:
+                tune_hint = f"freq↑ try --freq-offset {-int((phase_ones-0.5)*200)}k"
+            elif phase_ones < 0.45:
+                tune_hint = f"freq↓ try --freq-offset +{int((0.5-phase_ones)*200)}k"
+            else:
+                tune_hint = "freq≈OK"
             print(f"[msgs:{zmq_msgs} phase_msgs:{phase_zmq_msgs} chips:{len(chip_buf)} phase_chips:{len(phase_chip_buf)} "
                   f"crc_ok:{crc_ok_packets} preamble_only:{preamble_only_packets} "
                   f"phase_preamble:{phase_preamble_hits} phase_best_dist:{best_text} "
                   f"phase_streak:{phase_candidate_streak} "
                   f"ones:{ones:.3f} trans:{transitions:.3f} "
-                  f"phase_ones:{phase_ones:.3f} phase_trans:{phase_transitions:.3f} raw:{preview}]")
+                  f"phase_ones:{phase_ones:.3f}({tune_hint}) phase_trans:{phase_transitions:.3f} "
+                  f"raw:{preview}]")
             last_report = time.time()
 
+            if args.duration > 0 and time.time() - start_time >= args.duration:
+                break
+
 except KeyboardInterrupt:
+    pass
+finally:
     zmq_sub.close()
     if phase_zmq_sub is not None:
         phase_zmq_sub.close()
-    gr_block_obj.stop(); gr_block_obj.wait()
-    print("exit")
+    gr_block_obj.stop()
+    gr_block_obj.wait()
+
+    elapsed = time.time() - start_time
+    total_packets = crc_ok_packets + preamble_only_packets
+    print(f"\n{'='*60}")
+    print(f"PERFORMANCE REPORT")
+    print(f"{'='*60}")
+    print(f"  Duration:              {elapsed:.1f} s")
+    print(f"  CRC-OK packets:        {crc_ok_packets}")
+    print(f"  Preamble-only packets: {preamble_only_packets}")
+    print(f"  Total detections:      {total_packets}")
+    if elapsed > 0:
+        print(f"  Packet rate:           {total_packets/elapsed:.1f} pkts/s")
+        print(f"  CRC-OK rate:           {crc_ok_packets/elapsed:.1f} pkts/s")
+    if total_packets > 0:
+        print(f"  Success rate:          {crc_ok_packets/total_packets*100:.1f}%")
+    print(f"  CRC-OK payload bytes:  {phase_payload_bytes}")
+    if elapsed > 0:
+        print(f"  Throughput:            {phase_payload_bytes*8/elapsed:.0f} bps")
+    print(f"  ZMQ msgs (OQPSK):      {zmq_msgs}")
+    print(f"  ZMQ msgs (phase):      {phase_zmq_msgs}")
+    print(f"{'='*60}")
