@@ -2,42 +2,63 @@
 
 ## 总目标
 
-本项目以论文BlueBee为基础，论文原文在/python/ctc_sim/bluebee/文件夹下。最终目标是利用BLE的拓展广播特性，将bluebee负载放在辅助通道的广播包上，以尽可能小的改动实现BLE向zigbee的跨协议通信，并实现性能测量。
+本项目以论文 BlueBee 为基础，论文原文位于 `python/ctc_sim/bluebee/`。目标是利用 BLE 的 extended advertising 双包调度外壳，把 BlueBee 负载放入 secondary 包，在尽可能小的系统改动下实现 BLE 到 ZigBee 的跨协议通信，并完成后续性能测量。
 
 ## 当前目标
 
-实现BLE拓展广播的基础功能，要求在手机上的nrf connect软件中检测到广播包内容，将设备名放在辅助信道上，需要能看到该内容。
+当前阶段不再追求“手机完整跟随 AuxPtr 并解析 secondary 扩展广播内容”。当前实验目标改为：
 
-## 阶段性实验结论
+- primary 和 secondary/BlueBee 波形都实际在 BLE `ch39 / 2480 MHz` 发射
+- 手机上的 nRF Connect 只需能看到 primary 广播
+- `python/ctc_sim/std_zigbee/zigbee_rx.py` 需要能在 2480 MHz 附近检测到完整 ZigBee 包
 
-- 2026-06-23：使用`generate_ble_exadv_iq_30_72M.py --timing-debug-same-channel`生成的同信道拓展广播波形，并将裸机发送路径配置为primary和secondary都在ch37发射后，手机nRF Connect已经能看到primary包。
-- 该结果说明当前ADV_EXT_IND主信道PDU、基本BLE调制链路、发射功率/频点配置至少已达到手机可检测的程度。
-- 该结果不能直接证明手机已经跟随AuxPtr到真实辅助信道；`--timing-debug-same-channel`模式下secondary波形实际按ch37生成和发射，AuxPtr仍可编码ch3但只作为诊断字段。
-- 同信道诊断的下一步成功判据是手机nRF Connect显示`SDR_EXADV`。若只显示`C1:A2:A3:A4:A5:A6`，只能说明手机已解析/展示secondary AdvA，不能说明secondary AdvData里的Complete Local Name已被合并到extended advertising report。
-- 同信道实验记录应区分：手机是否显示地址、是否显示`SDR_EXADV`、显示延迟、是否关闭duplicate filtering或刷新扫描缓存；HackRF fixed ch37抓包应同时确认primary和secondary，且secondary包含`AdvA=C1:A2:A3:A4:A5:A6`和`Name=SDR_EXADV`。
-- 2026-06-23：手机nRF Connect在同信道模式下可显示`AdvA=C1:A2:A3:A4:A5:A6`、`Advertising type=Bluetooth 5 Advertising Extension`、`Primary PHY=LE 1M`、`Data status=Complete`，但仍不显示`SDR_EXADV`。由于AdvA只在secondary AUX_ADV_IND中，说明手机已经接收到同信道secondary；HackRF fixed ch37已确认secondary AdvData包含`Name=SDR_EXADV`，因此下一步优先排查手机/nRF Connect对当前扩展广播类型或AD组合的展示策略。
-- `generate_ble_exadv_iq_30_72M.py`提供`--diagnostic-profile`：默认`baseline-nonconn-nonscan`保持当前基线；`no-flags-name-only`只保留Complete Local Name；`connectable-advdata`将AdvMode改为connectable用于手机展示诊断。三者仍应先在同信道ch37模式下比较，不要同时切换到真实ch3 AUX。
-- 后续排查真实拓展广播时，应优先以“单primary ch37 -> ch3 AUX”为最小变量实验，不要过早恢复ch37/ch38/ch39多主信道发送，以免同时引入多次LO切换、扫描窗口命中概率和不同AuxPtr offset等额外因素。
+当前 extended advertising 的意义仅保留为“主包 + 辅助包”的发射调度外壳；`AuxPtr` 中编码的 secondary channel 目前只作为占位字段，不再作为手机兼容性成功判据。
 
-# 设备
+## 当前实验语义
 
-- 一台搭载zynq7020和ad9363的开发板，在主机电脑上生成好要发送的波形数据后，通过该开发板发射。
-- 一台HackRF One用于辅助开发
+- `generate_bluebee_iq_30_72M.py --profile extended` 默认生成 primary `ADV_EXT_IND` 和承载 BlueBee 的 secondary `AUX_ADV_IND`
+- 当前默认目标配置：
+  `python3 python/ctc_sim/bluebee/generate_bluebee_iq_30_72M.py --profile extended --channel 39 --secondary-wave-channel 39 --secondary-channel 3 --embed-mode phy-frame --ad-mode manufacturer`
+- 其中：
+  - `--channel 39`：primary 实际发射信道
+  - `--secondary-wave-channel 39`：secondary 实际 whitening 信道和实际 RF 发射频点
+  - `--secondary-channel 3`：仅用于 `AuxPtr` 编码占位，不代表当前实验要求手机跟随到 ch3
+  - `--primary-mode extended`：默认值，保持当前“AuxPtr 指向 ch3、但两个实际波形都在 ch39”的实验语义
+  - `--primary-mode legacy-visible`：仅作为手机可见性调试开关，不是当前默认模式
 
-# 项目结构
+## 阶段结论
 
-- python/ctc_sim/bluebee文件夹下的内容用于生成和分析bluebee信号，其中generate_bluebee_iq_30_72M.py将生成的zigbee前导码放在BLE的周期广播包中然后生成IQ波形数组
-- python/std_ble文件夹下主要有以下几个功能：
-  - ble_packet_detector.py用于控制HackRF检测生成的BLE数据包
-  - ble_rx.py用于控制HackRF检测BLE广播信号
-  - generate_ble_exadv_iq_30_72M.py用于生成BLE拓展广播包信号
-  - generate_ble_iq_30_72M.py用于生成BLE周期广播信号
-- python/ctc_sim/std_zigbee文件夹用于操纵HackRF模拟zigbee设备和生成可发送的zigbee波形数据
-- hdl/projects/antsdre310/antsdre310.sdk/app/src文件夹下为开发板裸机程序代码
+- 旧阶段的“手机显示完整 BLE extended advertising secondary 数据”路线已暂停，不再作为当前主线目标。
+- 当前主线改为利用 BLE exadv 的双包调度外壳，在 `ch39 / 2480 MHz` 上发 primary，并在同频发 BlueBee secondary。
+- 裸机 `ble_exadv_tx?` 现阶段只保留 `aux_delay_us interval_us` 两个参数，默认推荐命令形态为 `ble_exadv_tx? 6990 100000`。
+- 裸机调度以生成头文件中的 primary/secondary IQ、频点和 AuxOffset 元数据为准；不再保留 lead sweep、secondary test、timing debug 路径。
 
-# 注意事项
+## 验收标准
 
-1. 工作区裸机程序代码未被git追踪
-2. 裸机程序代码发生修改后，仅检查代码逻辑和语法，由用户来编译操作
-3. 以实际规范为准，代码注释可能有错
-4. doc/文件夹下有BLE5.1规范BLE_Core_v5.1.pdf,以此作为参考
+- 手机 nRF Connect 能看到 `ch39` 上的 primary 广播
+- HackRF 或其他接收链路能够确认 secondary/BlueBee 波形确实在 `2480 MHz`
+- `python/ctc_sim/std_zigbee/zigbee_rx.py` 能检测到完整 ZigBee frame
+- 优先接受标准：
+  - 能输出完整 frame bytes 供比对
+  - 若同时 FCS OK，则视为更强证据
+
+## 相关路径
+
+- `python/ctc_sim/bluebee/`
+  - `generate_bluebee_iq_30_72M.py`：当前主生成脚本
+  - `bluebee_phase_analyze.py`、`bluebee_phase_zigbee_rx.py`：BlueBee/ZigBee 分析辅助工具
+- `python/ctc_sim/std_zigbee/`
+  - `zigbee_rx.py`：当前主接收验证脚本
+- `python/std_ble/`
+  - `ble_exadv_hackrf_sniffer.py`：仍可用于观察 primary/secondary 存在性
+  - `generate_ble_exadv_iq_30_72M.py`：保留旧 BLE exadv 生成逻辑，但不再是当前主线
+- `hdl/projects/antsdre310/antsdre310.sdk/app/src/`
+  - 裸机发射控制代码
+
+## 注意事项
+
+1. 工作区裸机程序代码未被 git 追踪。
+2. 裸机代码修改后，只检查代码逻辑和语法，由用户自行编译和上板。
+3. 以实际规范为准，历史注释和旧实验记录可能已过时。
+4. `python/ctc_sim/stc_zigbee` 是笔误，实际路径是 `python/ctc_sim/std_zigbee`。
+5. `doc/BLE_Core_v5.1.pdf` 可作为 BLE 规范参考，但当前阶段不再以“规范手机跟随 AuxPtr”作为主要成功判据。
