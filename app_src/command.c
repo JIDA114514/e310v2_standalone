@@ -55,6 +55,7 @@
 #include "ble_tx_adv.h"
 #include "zigbee_tx.h"
 #include "ble_exadv.h"
+#include "bluebee_waveform.h"
 //#include "../../../../../../python/std_ble/ble_exadv_waveform_30_72M.h"
 
 static void ble_exadv_tx_cmd(double *param, char param_no);
@@ -147,8 +148,6 @@ extern const uint32_t ble_iq_ch37[13764] __attribute__((aligned));
 extern const uint32_t ble_iq_ch38[13764] __attribute__((aligned));
 extern const uint32_t ble_iq_ch39[13764] __attribute__((aligned));
 extern const uint32_t bluebee_iq_ch39[145982] __attribute__((aligned(64)));
-extern const uint32_t ble_exadv_primary_iq_ch37[69796] __attribute__((aligned(64)));
-extern const uint32_t ble_exadv_secondary_iq_ch3[78152] __attribute__((aligned(64)));
 static struct axi_dma_transfer transfer = {
 	// Number of bytes to write/read; double because of 2T2R mode
 	.size = sizeof(custom_iq_lut),
@@ -218,6 +217,7 @@ void debug_information(double *param, char param_no)
 	uint32_t p, f, s;
 	uint32_t mode;
 	uint32_t tx_samp_rate;
+	uint32_t tx_lo_freq;
 
 	ret = ad9361_get_en_state_machine_mode(ad9361_phy, mode);
 	if (ret == 0)
@@ -266,23 +266,23 @@ void dma_tx_demo(double *param, char param_no)
     no_os_gpio_set_value(ad9361_phy->gpio_desc_tx2_ctrl_l, 1);
     ad9361_set_tx_rf_port_output(ad9361_phy, TXB);
 //    ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH39);
-    ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH37);
+    ad9361_set_tx_lo_freq(ad9361_phy, ZIGBEE_CHANNEL_26);
 	printf("dma data loaded!\n");
 	Xil_DCacheFlush();
 	/* Flush cache data. */
 //	Xil_DCacheInvalidateRange((uintptr_t)ble_iq_ch39, sizeof(ble_iq_ch39));
-	Xil_DCacheFlushRange((uintptr_t)ble_exadv_primary_iq_ch37, sizeof(ble_exadv_primary_iq_ch37));
-	Xil_DCacheFlushRange((uintptr_t)zigbee_iq, sizeof(zigbee_iq));
+	Xil_DCacheFlushRange((uintptr_t)ble_exadv_secondary_iq_ch3, sizeof(ble_exadv_secondary_iq_ch3));
+	Xil_DCacheFlushRange((uintptr_t)zigbee_iq, sizeof(bluebee_zigbee_frame_iq));
 	/* Transfer the data. */
 	axi_dac_write(ad9361_phy->tx_dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
 	transfer.cyclic = CYCLIC;
-	transfer.size = sizeof(ble_exadv_primary_iq_ch37);
-	transfer.src_addr = (uintptr_t)ble_exadv_primary_iq_ch37;
+	transfer.size = sizeof(bluebee_zigbee_frame_iq);
+	transfer.src_addr = (uintptr_t)bluebee_zigbee_frame_iq;
 	int ret = axi_dmac_transfer_start(tx_dmac, &transfer);
 	if (ret == 0)
 	{
-		printf("start transfer!\n");
-		context = EXADV_PRI_37;
+		printf("start transfer!(bluebee)\n");
+		context = ZIGBEE_PREM_CH26;
 	}
 	else
 	{
@@ -297,23 +297,23 @@ void change_dma_context(double *param, char param_no){
 	ble_exadv_stop(0);
 	axi_dmac_transfer_stop(tx_dmac);
 	if(context == BLUEBEE_CH39){
-		transfer.size = sizeof(zigbee_iq);
-		transfer.src_addr = (uintptr_t)zigbee_iq;
+		transfer.size = sizeof(bluebee_zigbee_frame_iq);
+		transfer.src_addr = (uintptr_t)bluebee_zigbee_frame_iq;
 		context = ZIGBEE_PREM_CH26;
-		printf("dma set to zigbee\n");
+		printf("dma set to bluebee\n");
 	}
 	else if(context == ZIGBEE_PREM_CH26){
-		transfer.size = sizeof(ble_exadv_primary_iq_ch37);
-		transfer.src_addr = (uintptr_t)ble_exadv_primary_iq_ch37;
+		transfer.size = sizeof(ble_exadv_secondary_iq_ch3);
+		transfer.src_addr = (uintptr_t)ble_exadv_secondary_iq_ch3;
 		context = EXADV_PRI_37;
-		printf("dma set to exadv\n");
+		printf("dma set to exadv secondary\n");
 	}
 	else{
 		transfer.size = sizeof(bluebee_iq_ch39);
 		transfer.src_addr = (uintptr_t)bluebee_iq_ch39;
 		context = BLUEBEE_CH39;
-		ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH39);
-		printf("dma set to BlueBee\n");
+//		ad9361_set_tx_lo_freq(ad9361_phy, LO_FREQ_CH39);
+		printf("dma set to legacy BlueBee\n");
 	}
 	int ret = axi_dmac_transfer_start(tx_dmac, &transfer);
 	if(ret == 0){

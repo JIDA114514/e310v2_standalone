@@ -288,6 +288,7 @@ class BlePacketDetector:
     def _describe_packet(self, pdu, crc_ok, start_pos):
         header0, header1 = pdu[0], pdu[1]
         pdu_type = header0 & 0x0F
+        chsel = (header0 >> 5) & 0x01
         txadd = (header0 >> 6) & 0x01
         rxadd = (header0 >> 7) & 0x01
         length = header1 & 0x3F
@@ -295,7 +296,7 @@ class BlePacketDetector:
         pdu_name = BLE_PDU_TYPES.get(pdu_type, f"UNKNOWN_{pdu_type}")
         base = (
             f"[{self.detected}] ch{self.channel} start={start_pos} "
-            f"type={pdu_name} len={length} txadd={txadd} rxadd={rxadd} "
+            f"type={pdu_name} len={length} chsel={chsel} txadd={txadd} rxadd={rxadd} "
             f"crc={'OK' if crc_ok else 'BAD'}"
         )
         if pdu_type == 0x07:

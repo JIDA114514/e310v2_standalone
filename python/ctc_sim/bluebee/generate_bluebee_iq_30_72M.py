@@ -466,7 +466,7 @@ def main():
     parser.add_argument(
         "--post-pad-us",
         type=float,
-        default=1000.0,
+        default=10.0,
         help="zero-IQ silence appended after each packet before cyclic DMA repeats",
     )
     parser.add_argument(

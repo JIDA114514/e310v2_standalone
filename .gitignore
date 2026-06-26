@@ -5,3 +5,9 @@
 auto_test_tool
 .vscode
 __pycache__
+ble_waveform_30_72M.h
+bluebee_phase_analyze.py
+bluebee_phase_zigbee_rx.py
+measure_ble_aux_interval.py
+zigbee_waveform_30_72M.h
+bluebee_waveform_30_72M.h

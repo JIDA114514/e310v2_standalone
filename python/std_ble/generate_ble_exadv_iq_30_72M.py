@@ -463,7 +463,7 @@ def get_gaussian_filter(bt, sps, span=4):
     return h / np.sum(h)
 
 
-def ble_bits_to_iq_30_72m(bits, bt=0.5, pre_pad_us=0.0, post_pad_us=1000.0):
+def ble_bits_to_iq_30_72m(bits, bt=0.5, pre_pad_us=0.0, post_pad_us=10.0):
     symbols = np.array(list(bits), dtype=np.float32) * 2 - 1
     sps_high = 768
     nrz_high = np.repeat(symbols, sps_high)
@@ -509,7 +509,18 @@ def write_iq_c_arrays(path, arrays, meta_lines):
         for idx, item in enumerate(arrays):
             if idx:
                 f.write("\n")
+            macro_name = item["symbol"].upper() + "_WORDS"
+            f.write(f"#define {macro_name} ({len(item['iq'])}u)\n")
+        f.write("\n")
+        f.write("#ifdef BLE_EXADV_WAVEFORM_DEFINE_ARRAYS\n")
+        for item in arrays:
+            f.write("\n")
             write_one_c_array(f, item["symbol"], item["iq"])
+        f.write("#else\n")
+        for item in arrays:
+            macro_name = item["symbol"].upper() + "_WORDS"
+            f.write(f"extern const uint32_t {item['symbol']}[{macro_name}] __attribute__((aligned(64)));\n")
+        f.write("#endif\n")
 
 
 def bytes_hex(data):
@@ -541,7 +552,7 @@ def main():
     parser.add_argument(
         "--diagnostic-profile",
         choices=sorted(DIAGNOSTIC_PROFILES.keys()),
-        default="baseline-nonconn-nonscan",
+        default="connectable-advdata",
         help="extended advertising phone-display diagnostic profile",
     )
     parser.add_argument(
@@ -591,7 +602,7 @@ def main():
         help="invert flips the BlueBee RF chip projection for phase-sign A/B tests",
     )
     parser.add_argument("--bt", type=float, default=0.5, help="BLE Gaussian BT")
-    parser.add_argument("--post-pad-us", type=float, default=1000.0, help="zero-IQ silence appended after each packet")
+    parser.add_argument("--post-pad-us", type=float, default=10.0, help="zero-IQ silence appended after each packet")
     parser.add_argument("--secondary-pre-pad-us", type=float, default=DEFAULT_SECONDARY_PRE_PAD_US, help="zero-IQ silence prepended before AUX_ADV_IND for RF settle")
     parser.add_argument(
         "--output",

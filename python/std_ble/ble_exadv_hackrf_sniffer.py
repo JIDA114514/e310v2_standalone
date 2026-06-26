@@ -260,6 +260,7 @@ class BleStreamParser:
             "pdu_type": pdu_type,
             "pdu_name": BLE_PDU_TYPES.get(pdu_type, f"UNKNOWN_{pdu_type}"),
             "length": length,
+            "chsel": (header0 >> 5) & 0x01,
             "txadd": (header0 >> 6) & 0x01,
             "rxadd": (header0 >> 7) & 0x01,
             "crc_ok": crc_ok,
@@ -270,11 +271,19 @@ class BleStreamParser:
 
 
 class ExtendedAdvMatcher:
-    def __init__(self, secondary_channel, match_window_s=1.0, timing_window_us=1000.0, expected_name=None):
+    def __init__(
+        self,
+        secondary_channel,
+        match_window_s=1.0,
+        timing_window_us=1000.0,
+        expected_name=None,
+        event_interval_us=0.0,
+    ):
         self.secondary_channel = secondary_channel
         self.match_window_s = match_window_s
         self.timing_window_us = timing_window_us
         self.expected_name = expected_name
+        self.event_interval_us = event_interval_us
         self.primaries = []
         self.secondaries = []
         self.events = 0
@@ -284,6 +293,72 @@ class ExtendedAdvMatcher:
     @staticmethod
     def _adi_text(adi):
         return f"SID{adi[0]} DID{adi[1]}" if adi else "<none>"
+
+    @staticmethod
+    def _packet_start(packet):
+        return packet.get("abs_start", packet["start"])
+
+    @classmethod
+    def _start_delta_us(cls, primary, secondary):
+        return (cls._packet_start(secondary) - cls._packet_start(primary)) * 8.0
+
+    def _fold_timing(self, delta_us, aux_offset_us):
+        if self.event_interval_us <= 0:
+            return None
+        event_skip = int(round((delta_us - aux_offset_us) / self.event_interval_us))
+        folded_delta_us = delta_us - event_skip * self.event_interval_us
+        folded_error_us = folded_delta_us - aux_offset_us
+        return {
+            "event_skip": event_skip,
+            "folded_delta_us": folded_delta_us,
+            "folded_error_us": folded_error_us,
+        }
+
+    def _timing_metrics(self, primary, secondary):
+        aux = primary["ext"]["aux_ptr"]
+        start_delta_us = self._start_delta_us(primary, secondary)
+        error_vs_aux_us = start_delta_us - aux["offset_us"]
+        wall_delta_us = (secondary["monotonic"] - primary["monotonic"]) * 1000000.0
+        metrics = {
+            "start_delta_us": start_delta_us,
+            "error_vs_aux_us": error_vs_aux_us,
+            "wall_delta_us": wall_delta_us,
+            "wall_delta_ms": wall_delta_us / 1000.0,
+            "match_error_us": error_vs_aux_us,
+            "timing_source": "stream",
+        }
+        stream_fold = self._fold_timing(start_delta_us, aux["offset_us"])
+        wall_fold = self._fold_timing(wall_delta_us, aux["offset_us"])
+        if stream_fold:
+            metrics.update(stream_fold)
+            metrics["match_error_us"] = stream_fold["folded_error_us"]
+            metrics["timing_source"] = "stream_folded"
+        if wall_fold:
+            metrics["wall_event_skip"] = wall_fold["event_skip"]
+            metrics["wall_folded_delta_us"] = wall_fold["folded_delta_us"]
+            metrics["wall_folded_error_us"] = wall_fold["folded_error_us"]
+            if abs(wall_fold["folded_error_us"]) < abs(metrics["match_error_us"]):
+                metrics["match_error_us"] = wall_fold["folded_error_us"]
+                metrics["timing_source"] = "wall_folded"
+        return metrics
+
+    def _format_timing_metrics(self, metrics):
+        text = (
+            f"start_delta_us={metrics['start_delta_us']:.1f} "
+            f"error_vs_aux_us={metrics['error_vs_aux_us']:.1f}"
+        )
+        if self.event_interval_us > 0:
+            text += (
+                f" event_skip={metrics['event_skip']} "
+                f"folded_delta_us={metrics['folded_delta_us']:.1f} "
+                f"folded_error_vs_aux_us={metrics['folded_error_us']:.1f} "
+                f"wall_event_skip={metrics['wall_event_skip']} "
+                f"wall_folded_delta_us={metrics['wall_folded_delta_us']:.1f} "
+                f"wall_folded_error_vs_aux_us={metrics['wall_folded_error_us']:.1f} "
+                f"timing_source={metrics['timing_source']} "
+                f"match_error_us={metrics['match_error_us']:.1f}"
+            )
+        return text
 
     @staticmethod
     def _same_identity(primary, secondary):
@@ -298,11 +373,8 @@ class ExtendedAdvMatcher:
             return False
         return True
 
-    @staticmethod
-    def _timing_error_us(primary, secondary):
-        aux = primary["ext"]["aux_ptr"]
-        start_delta_us = (secondary["start"] - primary["start"]) * 8.0
-        return start_delta_us - aux["offset_us"]
+    def _timing_error_us(self, primary, secondary):
+        return self._timing_metrics(primary, secondary)["match_error_us"]
 
     def _same_event(self, primary, secondary):
         if not self._same_identity(primary, secondary):
@@ -314,8 +386,64 @@ class ExtendedAdvMatcher:
             return None
         return abs(self._timing_error_us(primary, secondary))
 
+    def _nearest_candidate(self, packet, candidates):
+        best = None
+        best_key = None
+        packet_is_primary = packet["kind"] == "primary"
+        for candidate in candidates:
+            primary = packet if packet_is_primary else candidate
+            secondary = candidate if packet_is_primary else packet
+            identity_ok = self._same_identity(primary, secondary)
+            if identity_ok:
+                score = abs(self._timing_error_us(primary, secondary))
+                key = (0, score)
+            else:
+                key = (1, abs((secondary["monotonic"] - primary["monotonic"]) * 1000000.0))
+            if best_key is None or key < best_key:
+                best = candidate
+                best_key = key
+        return best
+
+    def _format_nearest_candidate(self, packet, candidate):
+        if candidate is None:
+            opposite = "secondary" if packet["kind"] == "primary" else "primary"
+            return f"nearest_{opposite}=<none> reason=no_candidate"
+
+        if packet["kind"] == "primary":
+            primary = packet
+            secondary = candidate
+            opposite = "secondary"
+        else:
+            primary = candidate
+            secondary = packet
+            opposite = "primary"
+
+        pri_ext = primary["ext"]
+        sec_ext = secondary["ext"]
+        identity_ok = self._same_identity(primary, secondary)
+        aux = pri_ext["aux_ptr"]
+        metrics = self._timing_metrics(primary, secondary) if aux else None
+        wall_delta_ms = (secondary["monotonic"] - primary["monotonic"]) * 1000.0
+        if not identity_ok:
+            reason = "identity_mismatch"
+        elif abs(metrics["match_error_us"]) > self.timing_window_us:
+            reason = "timing_error"
+        else:
+            reason = "unmatched"
+        timing_text = self._format_timing_metrics(metrics) if metrics else "start_delta_us=nan error_vs_aux_us=nan"
+
+        return (
+            f"nearest_{opposite}=ch{candidate['channel']}#{candidate['packet_no']} "
+            f"reason={reason} "
+            f"primary_ADI={self._adi_text(pri_ext['adi'])} secondary_ADI={self._adi_text(sec_ext['adi'])} "
+            f"primary_AdvA={pri_ext['adva']} secondary_AdvA={sec_ext['adva']} "
+            f"{timing_text} wall_delta_ms={wall_delta_ms:.3f}"
+        )
+
     def _cleanup(self, now):
         lines = []
+        old_primaries = list(self.primaries)
+        old_secondaries = list(self.secondaries)
         keep = []
         for primary in self.primaries:
             if now - primary["monotonic"] <= self.match_window_s:
@@ -329,7 +457,8 @@ class ExtendedAdvMatcher:
                     f"ADI={self._adi_text(ext['adi'])} AdvA={ext['adva']} "
                     f"AuxPtr=ch{aux['channel']}+{aux['offset_us']}us "
                     f"aux_window=[{aux['offset_us'] - self.timing_window_us:.0f},"
-                    f"{aux['offset_us'] + self.timing_window_us:.0f}]us"
+                    f"{aux['offset_us'] + self.timing_window_us:.0f}]us "
+                    f"{self._format_nearest_candidate(primary, self._nearest_candidate(primary, old_secondaries))}"
                 )
         self.primaries = keep
 
@@ -342,10 +471,14 @@ class ExtendedAdvMatcher:
                 ext = secondary["ext"]
                 lines.append(
                     f"secondary-only[{self.expired_secondaries}] ch{secondary['channel']} #{secondary['packet_no']} "
-                    f"ADI={self._adi_text(ext['adi'])} AdvA={ext['adva']} AdvData={ext['adv_data_text']}"
+                    f"ADI={self._adi_text(ext['adi'])} AdvA={ext['adva']} AdvData={ext['adv_data_text']} "
+                    f"{self._format_nearest_candidate(secondary, self._nearest_candidate(secondary, old_primaries))}"
                 )
         self.secondaries = keep
         return lines
+
+    def flush(self):
+        return self._cleanup(float("inf"))
 
     def _format_event(self, primary, secondary):
         self.events += 1
@@ -353,8 +486,7 @@ class ExtendedAdvMatcher:
         sec_ext = secondary["ext"]
         aux = pri_ext["aux_ptr"]
         wall_delta_ms = (secondary["monotonic"] - primary["monotonic"]) * 1000.0
-        start_delta_us = (secondary["start"] - primary["start"]) * 8.0
-        aux_error_us = start_delta_us - aux["offset_us"]
+        timing_text = self._format_timing_metrics(self._timing_metrics(primary, secondary))
         name_ok = ""
         if self.expected_name:
             name_ok = " name_ok=1" if sec_ext["name"] == self.expected_name else " name_ok=0"
@@ -362,8 +494,7 @@ class ExtendedAdvMatcher:
             f"EXT_ADV_EVENT[{self.events}] primary_ch={primary['channel']} secondary_ch={secondary['channel']} "
             f"AuxPtr=ch{aux['channel']}+{aux['offset_us']}us phy{aux['phy']} "
             f"ADI={self._adi_text(sec_ext['adi'])} AdvA={sec_ext['adva']} "
-            f"Name={sec_ext['name']} start_delta_us={start_delta_us:.1f} "
-            f"error_vs_aux_us={aux_error_us:.1f} wall_delta_ms={wall_delta_ms:.3f}{name_ok}"
+            f"Name={sec_ext['name']} {timing_text} wall_delta_ms={wall_delta_ms:.3f}{name_ok}"
         )
 
     def _try_match_primary(self, primary):
@@ -416,9 +547,12 @@ class ExtendedAdvMatcher:
 
 def describe_packet(packet):
     ext = packet["ext"]
+    abs_start_text = f" abs_start={packet['abs_start']}" if "abs_start" in packet else ""
     base = (
-        f"[ch{packet['channel']} #{packet['packet_no']}] start={packet['start']} "
-        f"type={packet['pdu_name']} len={packet['length']} crc={'OK' if packet['crc_ok'] else 'BAD'}"
+        f"[ch{packet['channel']} #{packet['packet_no']}] start={packet['start']}{abs_start_text} "
+        f"type={packet['pdu_name']} len={packet['length']} "
+        f"chsel={packet['chsel']} txadd={packet['txadd']} rxadd={packet['rxadd']} "
+        f"crc={'OK' if packet['crc_ok'] else 'BAD'}"
     )
     if not ext:
         return base
@@ -472,13 +606,19 @@ def build_top_block(args, packet_queue):
             )
             self.parser = BleStreamParser(channel, keep_crc_errors=args.keep_crc_errors)
             self.channel = channel
+            self.abs_stream_offset = 0
+            self.parser_base_offset = 0
 
         def work(self, input_items, output_items):
             del output_items
             data = bytes(input_items[0])
             if data:
                 self.parser.insert_data(data)
-                for packet in self.parser.poll():
+                packets = self.parser.poll()
+                for packet in packets:
+                    packet["abs_start"] = self.parser_base_offset + packet["start"]
+                self.abs_stream_offset += len(data)
+                for packet in packets:
                     packet_queue.put(packet)
             return len(input_items[0])
 
@@ -556,9 +696,12 @@ def build_hop_top_block(args, packet_queue):
             )
             self.lock = threading.RLock()
             self.parser = BleStreamParser(channel, keep_crc_errors=args.keep_crc_errors)
+            self.abs_stream_offset = 0
+            self.parser_base_offset = 0
 
         def set_channel(self, channel):
             with self.lock:
+                self.parser_base_offset = self.abs_stream_offset
                 self.parser.reset(channel=channel)
 
         def work(self, input_items, output_items):
@@ -568,6 +711,9 @@ def build_hop_top_block(args, packet_queue):
                 with self.lock:
                     self.parser.insert_data(data)
                     packets = self.parser.poll()
+                    for packet in packets:
+                        packet["abs_start"] = self.parser_base_offset + packet["start"]
+                    self.abs_stream_offset += len(data)
                 for packet in packets:
                     packet_queue.put(packet)
             return len(input_items[0])
@@ -627,6 +773,8 @@ def build_hop_top_block(args, packet_queue):
 def validate_args(args):
     primary_freq = ble_channel_freq_hz(args.primary_channel)
     secondary_freq = ble_channel_freq_hz(args.secondary_channel)
+    if args.event_interval_us < 0:
+        raise ValueError("event-interval-us must be non-negative")
     if args.mode == "fixed":
         if args.fixed_channel is None:
             args.fixed_channel = args.secondary_channel
@@ -665,6 +813,7 @@ def run_wide(args):
         match_window_s=args.match_window_ms / 1000.0,
         timing_window_us=args.timing_window_us,
         expected_name=args.expected_name,
+        event_interval_us=args.event_interval_us,
     )
     stop_at = time.monotonic() + args.duration if args.duration > 0 else None
 
@@ -679,7 +828,8 @@ def run_wide(args):
     print(
         "BLE exadv HackRF sniffer: "
         f"center={args.center_freq / 1e6:.3f}MHz sample_rate={args.sample_rate / 1e6:.1f}Msps "
-        f"primary_ch={args.primary_channel} secondary_ch={args.secondary_channel} timeline=inproc"
+        f"primary_ch={args.primary_channel} secondary_ch={args.secondary_channel} "
+        f"event_interval_us={args.event_interval_us:.0f} timeline=inproc"
     )
     tb.start()
     try:
@@ -692,6 +842,8 @@ def run_wide(args):
                 print(describe_packet(packet))
             for line in matcher.feed(packet):
                 print(line)
+        for line in matcher.flush():
+            print(line)
         primary_parser = tb.packet_sinks["primary"].parser
         secondary_parser = tb.packet_sinks["secondary"].parser
         print(
@@ -722,6 +874,10 @@ def format_hop_event(event_no, primary, secondary, retuned_at, window_end, expec
     sec_ext = secondary["ext"]
     aux = pri_ext["aux_ptr"]
     wall_delta_ms = (secondary["monotonic"] - primary["monotonic"]) * 1000.0
+    primary_start = primary.get("abs_start", primary["start"])
+    secondary_start = secondary.get("abs_start", secondary["start"])
+    start_delta_us = (secondary_start - primary_start) * 8.0
+    aux_error_us = start_delta_us - aux["offset_us"]
     retune_after_primary_ms = (retuned_at - primary["monotonic"]) * 1000.0
     window_left_ms = max(0.0, (window_end - secondary["monotonic"]) * 1000.0)
     name_ok = ""
@@ -731,7 +887,8 @@ def format_hop_event(event_no, primary, secondary, retuned_at, window_end, expec
         f"EXT_ADV_EVENT[{event_no}] mode=hop primary_ch={primary['channel']} secondary_ch={secondary['channel']} "
         f"AuxPtr=ch{aux['channel']}+{aux['offset_us']}us phy{aux['phy']} "
         f"ADI={adi_text(sec_ext['adi'])} AdvA={sec_ext['adva']} "
-        f"Name={sec_ext['name']} wall_delta_ms={wall_delta_ms:.3f} "
+        f"Name={sec_ext['name']} start_delta_us={start_delta_us:.1f} "
+        f"error_vs_aux_us={aux_error_us:.1f} wall_delta_ms={wall_delta_ms:.3f} "
         f"retune_after_primary_ms={retune_after_primary_ms:.3f} window_left_ms={window_left_ms:.3f}{name_ok}"
     )
 
@@ -988,6 +1145,7 @@ def main():
     parser.add_argument("--osmosdr-args", default="hackrf=0", help="osmosdr source args")
     parser.add_argument("--match-window-ms", type=float, default=1000.0, help="wall-clock window for primary/secondary association")
     parser.add_argument("--timing-window-us", type=float, default=1000.0, help="maximum absolute primary-to-secondary AuxPtr timing error accepted as one event")
+    parser.add_argument("--event-interval-us", type=float, default=0.0, help="wide mode: expected advertising event period; >0 folds candidate timing by this period before matching")
     parser.add_argument("--retune-guard-us", type=float, default=5000.0, help="hop mode: retune this many us before AuxPtr offset")
     parser.add_argument("--aux-window-us", type=float, default=8000.0, help="hop mode: time spent listening on the secondary channel after retune")
     parser.add_argument("--primary-settle-us", type=float, default=1000.0, help="hop mode: delay after tuning back to primary")

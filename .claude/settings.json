@@ -7,7 +7,9 @@
       "Bash(python3 python/ctc_sim/bluebee/generate_bluebee_zigbee_frame_iq_30_72M.py --help)",
       "Bash(python3 -c ' *)",
       "Bash(python3 -c \"import py_compile; py_compile.compile\\('python/ctc_sim/std_zigbee/zigbee_rx.py', doraise=True\\); print\\('OK'\\)\")",
-      "Bash(python3 python/ctc_sim/std_zigbee/zigbee_rx.py --help)"
+      "Bash(python3 python/ctc_sim/std_zigbee/zigbee_rx.py --help)",
+      "Bash(python3 python/ctc_sim/bluebee/generate_bluebee_zigbee_frame_iq_30_72M.py --zigbee-payload '0x11 0x22 0x33 0x44' --post-pad-us 0 --output python/ctc_sim/bluebee/bluebee_zigbee_frame_30_72M.h)",
+      "Bash(python3 -c *)"
     ]
   }
 }

@@ -4,11 +4,10 @@
 #include "ad9361_api.h"
 #include "axi_dac_core.h"
 #include "axi_dmac.h"
+#define BLE_EXADV_WAVEFORM_DEFINE_ARRAYS
 #include "ble_exadv.h"
 #include "no_os_delay.h"
 #include "xtime_l.h"
-
-#include "../../../../../../python/std_ble/ble_exadv_waveform_30_72M.h"
 
 #ifdef XILINX_PLATFORM
 extern void Xil_DCacheFlush(void);
@@ -22,7 +21,7 @@ extern void Xil_DCacheFlushRange(uintptr_t adr, uint32_t len);
 #define BLE_EXADV_LO_SWITCH_EST_US (700u)
 #define BLE_EXADV_SECONDARY_START_LEAD_US (0u)
 #define BLE_EXADV_ARRAY_WORDS(array_) ((uint32_t)(sizeof(array_) / sizeof((array_)[0])))
-#define BLE_EXADV_PRIMARY_CH37_WORDS BLE_EXADV_ARRAY_WORDS(ble_exadv_primary_iq_ch37)
+#define BLE_EXADV_PRIMARY_CH37_WORDS BLE_EXADV_ARRAY_WORDS(ble_exadv_primary_iq_ch39)
 #define BLE_EXADV_SECONDARY_CH3_WORDS BLE_EXADV_ARRAY_WORDS(ble_exadv_secondary_iq_ch3)
 
 #ifndef BLE_EXADV_TIMING_DEBUG
@@ -52,7 +51,7 @@ struct ble_exadv_primary_waveform {
 };
 
 static const struct ble_exadv_primary_waveform ble_exadv_primaries[] = {
-    {ble_exadv_primary_iq_ch37, BLE_EXADV_PRIMARY_CH37_FREQ_HZ, 37u},
+    {ble_exadv_primary_iq_ch39, BLE_EXADV_PRIMARY_CH39_FREQ_HZ, 39u},
 };
 
 #define BLE_EXADV_PRIMARY_COUNT ((uint32_t)(sizeof(ble_exadv_primaries) / sizeof(ble_exadv_primaries[0])))
@@ -155,7 +154,7 @@ static void ble_exadv_flush_iq(void)
 {
 #ifdef XILINX_PLATFORM
     Xil_DCacheFlush();
-    Xil_DCacheFlushRange((uintptr_t)ble_exadv_primary_iq_ch37,
+    Xil_DCacheFlushRange((uintptr_t)ble_exadv_primary_iq_ch39,
                          BLE_EXADV_PRIMARY_CH37_WORDS * sizeof(uint32_t));
     Xil_DCacheFlushRange((uintptr_t)ble_exadv_secondary_iq_ch3,
                          BLE_EXADV_SECONDARY_CH3_WORDS * sizeof(uint32_t));
@@ -176,21 +175,28 @@ static int ble_exadv_start_dma(const uint32_t *iq_words, uint32_t word_count)
     return axi_dmac_transfer_start(tx_dmac, &transfer);
 }
 
+static uint64_t current_tx_lo_freq = 0;
 static int ble_exadv_set_primary_lo(uint32_t primary_index)
 {
+	if(current_tx_lo_freq == BLE_EXADV_PRIMARY_CH39_FREQ_HZ){
+		return 0;
+	}
     int ret = ad9361_set_tx_lo_freq(ad9361_phy, ble_exadv_primaries[primary_index].freq_hz);
 
     if (ret < 0)
         printf("ble exadv primary lo tune failed\n");
-    else
-        no_os_mdelay(1);
+    else{
+    	current_tx_lo_freq = BLE_EXADV_PRIMARY_CH39_FREQ_HZ;
+    	no_os_udelay(500);
+    	printf("change to primary freq\n");
+    }
 
     return ret;
 }
 
 static int ble_exadv_set_secondary_lo(void)
 {
-#if BLE_EXADV_SECONDARY_FREQ_HZ == BLE_EXADV_PRIMARY_CH37_FREQ_HZ
+#if BLE_EXADV_SECONDARY_FREQ_HZ == BLE_EXADV_PRIMARY_CH39_FREQ_HZ
     return 0;
 #else
     int ret = ad9361_set_tx_lo_freq(ad9361_phy, BLE_EXADV_SECONDARY_FREQ_HZ);

@@ -3,24 +3,19 @@
 #define BLE_EXADV
 
 #include <stdint.h>
-//#include "../../../../../../python/std_ble/ble_exadv_waveform_30_72M.h"
+#include "../../../../../../python/std_ble/ble_exadv_waveform_30_72M.h"
 
 /* Primary: BLE advertising channel 37 */
 #define BLE_EXADV_PRIMARY_CH37_FREQ_HZ (2402000000ULL)
 #define BLE_EXADV_PRIMARY_CH38_FREQ_HZ (2426000000ULL)
 #define BLE_EXADV_PRIMARY_CH39_FREQ_HZ (2480000000ULL)
-/* Same-channel diagnostic: secondary waveform is transmitted on ch37. */
-#define BLE_EXADV_SECONDARY_FREQ_HZ BLE_EXADV_PRIMARY_CH37_FREQ_HZ
-#define BLE_EXADV_AUX_OFFSET_US (30000u)
-#define BLE_EXADV_INTERVAL_US (40000u)
+/* Same-channel diagnostic: secondary waveform is transmitted on ch39. */
+#define BLE_EXADV_PRIMARY_FREQ_HZ BLE_EXADV_PRIMARY_CH39_FREQ_HZ
+#define BLE_EXADV_SECONDARY_FREQ_HZ BLE_EXADV_PRIMARY_CH39_FREQ_HZ
+#define BLE_EXADV_AUX_OFFSET_US (600u)
+#define BLE_EXADV_INTERVAL_US (10000u)
 #define BLE_EXADV_PRIMARY_SPACING_US (9000u)
 #define BLE_EXADV_PRIMARY_AIR_US (136u)
-/* Informational for the default generated profile; DMA uses sizeof(array). */
-#define BLE_EXADV_PRIMARY_WORDS (69796u)
-#define BLE_EXADV_SECONDARY_WORDS (78152u)
-
-// extern const uint32_t ble_exadv_primary_iq_ch37[BLE_EXADV_PRIMARY_WORDS] __attribute__((aligned(64)));
-// extern const uint32_t ble_exadv_secondary_iq_ch3[BLE_EXADV_SECONDARY_WORDS] __attribute__((aligned(64)));
 
 int ble_exadv_start(uint32_t aux_offset_us, uint32_t interval_us);
 int ble_exadv_start_with_timing(uint32_t aux_offset_us, uint32_t interval_us,
