@@ -43,7 +43,7 @@ DEFAULT_SID = 0
 DEFAULT_DID = None
 DEFAULT_PRIMARY_CHANNELS = "39"
 DEFAULT_PRIMARY_SPACING_US = 9000
-DEFAULT_ZIGBEE_PAYLOAD = [0x11, 0x22, 0x33, 0x44]
+DEFAULT_ZIGBEE_PAYLOAD = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D]
 PHASE_POLARITIES = ("normal", "inverted")
 DIAGNOSTIC_PROFILES = {
     "baseline-nonconn-nonscan": {
@@ -294,6 +294,7 @@ def build_complete_local_name_adv_data(name):
 def build_adv_data(
     name,
     include_flags=True,
+    include_name=True,
     bluebee_bytes=None,
     bluebee_ad_mode="manufacturer",
     company_id=0xFFFF,
@@ -301,7 +302,8 @@ def build_adv_data(
     adv_data = []
     if include_flags:
         adv_data.extend([0x02, BLE_AD_TYPE_FLAGS, 0x06])
-    adv_data.extend(build_complete_local_name_adv_data(name))
+    if include_name:
+        adv_data.extend(build_complete_local_name_adv_data(name))
     if bluebee_bytes is None:
         return adv_data, None, 0
 
@@ -562,6 +564,11 @@ def main():
         help="override whether to include BLE Flags AD structure before Complete Local Name",
     )
     parser.add_argument(
+        "--no-name",
+        action="store_true",
+        help="omit Complete Local Name AD structure to maximise BlueBee payload space",
+    )
+    parser.add_argument(
         "--append-bluebee-zigbee",
         action="store_true",
         help="append a BlueBee-emulated ZigBee frame to secondary AdvData",
@@ -661,6 +668,7 @@ def main():
     adv_data, bluebee_start, bluebee_len = build_adv_data(
         args.name,
         include_flags=include_flags,
+        include_name=not args.no_name,
         bluebee_bytes=bluebee_bytes,
         bluebee_ad_mode=args.bluebee_ad_mode,
         company_id=args.company_id,

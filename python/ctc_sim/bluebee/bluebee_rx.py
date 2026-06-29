@@ -50,7 +50,8 @@ PHASE_DETECT_CONFIRMATIONS = 2
 
 PHASE_SCAN_PERIOD = 0.05
 PHASE_SCAN_CHIPS = 4096
-PHASE_MAX_CHIPS = 9600
+PHASE_FAST_SCAN_CHIPS = 50000
+PHASE_MAX_CHIPS = 60000
 DIAG_SCAN_CHIPS = 4096
 
 
@@ -129,6 +130,55 @@ def build_phase_templates():
 
 
 PHASE_TEMPLATES = build_phase_templates()
+
+
+# ── Fast phase-template pre-scan ──────────────────────────────────────────
+
+def fast_phase_template_scan(chips, templates, max_dist=PHASE_TEMPLATE_MAX_DIST):
+    """Fast O(N) scan for phase-template preamble candidates.
+
+    Uses an integer sliding window with native ``int.bit_count()`` for
+    Hamming distance, checking both normal and inverted polarities against
+    pre-computed template and inverted-template integers — no string
+    inversion of the full chip buffer is needed.
+
+    Returns
+    -------
+    list of (chip_pos, dist, template_name)
+        Sorted by distance (best matches first).
+    """
+    candidates = []
+
+    for tmpl in templates:
+        tmpl_int = tmpl["int"]
+        tmpl_len = tmpl["len"]
+        tmpl_mask = tmpl["mask"]
+        tmpl_inv_int = (~tmpl_int) & tmpl_mask  # bit-flipped template for "inverted" polarity
+
+        if len(chips) < tmpl_len:
+            continue
+
+        # Build initial running integer: chips[pos : pos+tmpl_len] as MSB-first int
+        running = chips_to_int(chips[:tmpl_len])
+
+        for pos in range(len(chips) - tmpl_len + 1):
+            # Normal polarity Hamming distance
+            dist_n = (running ^ tmpl_int).bit_count()
+            if dist_n <= max_dist:
+                candidates.append((pos, dist_n, tmpl["name"]))
+
+            # Inverted polarity: running vs bit-flipped template
+            dist_i = (running ^ tmpl_inv_int).bit_count()
+            if dist_i <= max_dist:
+                candidates.append((pos, dist_i, tmpl["name"]))
+
+            # Slide window forward by one chip: drop MSB, shift left, add new LSB
+            if pos + tmpl_len < len(chips):
+                new_bit = 1 if chips[pos + tmpl_len] == "1" else 0
+                running = ((running << 1) & tmpl_mask) | new_bit
+
+    candidates.sort(key=lambda x: x[1])
+    return candidates
 
 
 # ── Chip utilities ───────────────────────────────────────────────────────
@@ -325,6 +375,8 @@ parser.add_argument("--phase-keep-offset", type=int, default=0,
                     help="Sample offset 0..4 used by the GNU Radio phase chip sampler")
 parser.add_argument("--phase-scan-period", type=float, default=PHASE_SCAN_PERIOD,
                     help="Seconds between fast phase-domain BlueBee scans")
+parser.add_argument("--phase-fast-scan-chips", type=int, default=PHASE_FAST_SCAN_CHIPS,
+                    help="Max chips for fast phase-template pre-scan (0 = fall back to old PHASE_SCAN_CHIPS window)")
 parser.add_argument("--phase-hit-print-every", type=int, default=1,
                     help="Print every N phase preamble hits")
 parser.add_argument("--phase-detect-confirmations", type=int, default=PHASE_DETECT_CONFIRMATIONS,
@@ -386,6 +438,7 @@ phase_preamble_hits = 0
 phase_payload_bytes = 0
 phase_candidate_streak = 0
 phase_best_dist = None
+phase_fast_scan_candidates = 0
 
 start_time = time.time()
 last_report = time.time()
@@ -411,7 +464,7 @@ try:
         if phase_chip_buf and time.time() - last_rx_time > 3.0:
             phase_chip_buf = ""
 
-        # ── Phase-diff BlueBee scan ─────────────────────────────────────
+        # ── Phase-diff BlueBee scan (fast template pre-scan + targeted decode) ──
 
         if (
             not args.no_phase_rx
@@ -419,11 +472,53 @@ try:
             and time.time() - last_phase_scan >= args.phase_scan_period
         ):
             last_phase_scan = time.time()
-            phase_scan_buf = phase_chip_buf[-PHASE_SCAN_CHIPS:]
-            detection = find_bluebee_detection(
-                phase_scan_buf, BB_CHIP_MAPS,
-                max_preamble_dist=args.phase_detect_max_dist,
-            )
+
+            # ── Step 1: Fast phase-template scan on a large buffer window ──
+            if args.phase_fast_scan_chips > 0:
+                scan_chips = min(args.phase_fast_scan_chips, len(phase_chip_buf))
+                phase_scan_buf = phase_chip_buf[-scan_chips:]
+
+                candidates = fast_phase_template_scan(
+                    phase_scan_buf, PHASE_TEMPLATES,
+                    max_dist=args.phase_detect_max_dist,
+                )
+                phase_fast_scan_candidates = len(candidates)
+
+                # ── Step 2: Targeted full decode around each candidate ─────
+                WINDOW_BEFORE = 64     # chips before candidate for chip-alignment search
+                WINDOW_AFTER = 9000    # enough for max-length ZigBee frame (~8640 chips)
+
+                detection = None
+                tried_positions = set()
+
+                for cand_pos, cand_dist, cand_name in candidates:
+                    # Skip candidates too close to one we already tried
+                    if any(abs(cand_pos - seen) < 64 for seen in tried_positions):
+                        continue
+                    tried_positions.add(cand_pos)
+
+                    window_start = max(0, cand_pos - WINDOW_BEFORE)
+                    window_end = min(len(phase_scan_buf), cand_pos + WINDOW_AFTER)
+                    window = phase_scan_buf[window_start:window_end]
+
+                    detection = find_bluebee_detection(
+                        window, BB_CHIP_MAPS,
+                        max_preamble_dist=args.phase_detect_max_dist,
+                    )
+                    if detection is not None:
+                        # Adjust positions from window-relative to scan_buf-relative
+                        detection["chip_pos"] += window_start
+                        detection["consume_chips"] += window_start
+                        break
+            else:
+                # ── Legacy path: brute-force on last PHASE_SCAN_CHIPS ─────
+                phase_scan_buf = phase_chip_buf[-PHASE_SCAN_CHIPS:]
+                detection = find_bluebee_detection(
+                    phase_scan_buf, BB_CHIP_MAPS,
+                    max_preamble_dist=args.phase_detect_max_dist,
+                )
+
+            # ── Step 3: Process detection (same confirmation logic) ────────
             if detection is None:
                 phase_candidate_streak = 0
                 phase_best_dist = None
@@ -505,7 +600,7 @@ try:
                 f"[phase_msgs:{phase_zmq_msgs} phase_chips:{len(phase_chip_buf)} "
                 f"crc_ok:{crc_ok_packets} preamble_only:{preamble_only_packets} "
                 f"phase_preamble:{phase_preamble_hits} phase_best_dist:{best_text} "
-                f"phase_streak:{phase_candidate_streak} "
+                f"phase_streak:{phase_candidate_streak} phase_cands:{phase_fast_scan_candidates} "
                 f"phase_ones:{phase_ones:.3f}({tune_hint}) phase_trans:{phase_transitions:.3f} "
                 f"raw:{preview}]"
             )
