@@ -12,7 +12,10 @@
       "Bash(python3 -c *)",
       "Bash(python3 -c \"import py_compile; py_compile.compile\\('python/ctc_sim/bluebee/bluebee_rx.py', doraise=True\\); print\\('Syntax OK'\\)\")",
       "Bash(python3 python/std_ble/generate_ble_exadv_iq_30_72M.py --diagnostic-profile connectable-advdata --channel 39 --timing-debug-same-channel --aux-offset-us 600 --include-flags --name S --append-bluebee-zigbee --bluebee-ad-mode manufacturer --zigbee-payload '0x11 0x22 0x33 0x44' --output /tmp/ble_test_4B.h)",
-      "Bash(python3 python/std_ble/generate_ble_exadv_iq_30_72M.py --help)"
+      "Bash(python3 python/std_ble/generate_ble_exadv_iq_30_72M.py --help)",
+      "Bash(python3 -c \"import sys; sys.path.insert\\(0, 'python/ctc_sim/std_zigbee'\\); sys.path.insert\\(0, 'python/ctc_sim/bluebee'\\); import py_compile; py_compile.compile\\('python/ctc_sim/bluebee/bluebee_rx.py', doraise=True\\); print\\('Syntax OK'\\)\")",
+      "Bash(xargs kill -9)",
+      "Bash(kill -9 186511)"
     ]
   }
 }

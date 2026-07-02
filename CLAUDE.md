@@ -59,4 +59,6 @@
 - **阈值**：PDU payload **~238 字节**（216 BlueBee 字节 / 46 字节 ZigBee payload）是手机能检测到的上限。
 - **失败原因**：超过此阈值时，手机蓝牙协议栈静默丢弃该包，不显示任何广播。该限制并非 BLE 规范本身的 255 字节硬上限，而是手机厂商实现的内部 buffer 限制。
 - **默认配置**：`generate_ble_exadv_iq_30_72M.py` 的 `DEFAULT_ZIGBEE_PAYLOAD` 已设置为 46 字节最大值（`0x00..0x2D`），`--include-flags` + `--name S` 已启用。
-- **实际影响**：吞吐量约为 46 字节 / 100ms = **460 B/s**，检测脚本的结果为125bps,15.625Bps
+- **理论吞吐**：46 字节 / 100ms = **460 B/s**（3680 bps）。
+- **接收吞吐瓶颈**：`bluebee_rx.py` 的 `PHASE_DETECT_CONFIRMATIONS` 原为 2，但 `PHASE_MAX_CHIPS=60000`（30ms buffer）远小于 `PHASE_SCAN_PERIOD=50ms` 间隔内产生的 100K 新 chips，导致单个数据包永远无法被连续两次扫描看到，confirmations=2 几乎丢弃了所有命中。
+- **修复（2024-06-29）**：`PHASE_DETECT_CONFIRMATIONS=1`，`PHASE_SCAN_PERIOD=0.02`（20ms），`PHASE_MAX_CHIPS=120000`（60ms buffer），保证 ~100% 数据覆盖。

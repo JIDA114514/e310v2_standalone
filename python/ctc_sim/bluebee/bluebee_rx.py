@@ -46,12 +46,12 @@ from zigbee_rx_common import (                                                  
 PREAMBLE_ONLY_SYMBOLS = [0, 0, 0, 0, 0, 0, 0, 0, 14, 5, 0, 0]
 PREAMBLE_ONLY_MAX_SYMBOL_DIST = 144
 PHASE_TEMPLATE_MAX_DIST = 110
-PHASE_DETECT_CONFIRMATIONS = 2
+PHASE_DETECT_CONFIRMATIONS = 1
 
-PHASE_SCAN_PERIOD = 0.05
+PHASE_SCAN_PERIOD = 0.02
 PHASE_SCAN_CHIPS = 4096
 PHASE_FAST_SCAN_CHIPS = 50000
-PHASE_MAX_CHIPS = 60000
+PHASE_MAX_CHIPS = 120000
 DIAG_SCAN_CHIPS = 4096
 
 
@@ -270,6 +270,7 @@ def find_bluebee_detection(chips, bb_chip_maps, max_preamble_dist=PHASE_TEMPLATE
                         "consume_chips": local_chip_pos + MIN_DETECT_BYTES * 64,
                         "symbol_distances": [dist for _, dist in syms[sym_pos : sym_pos + 12]],
                         "symbols": [symbol for symbol, _ in syms[sym_pos : sym_pos + 12]],
+                        "_syms": syms,  # keep ref for full-frame distance diag
                     }
 
                     if 0 < phr_len <= 127:
@@ -287,8 +288,22 @@ def find_bluebee_detection(chips, bb_chip_maps, max_preamble_dist=PHASE_TEMPLATE
                             }
                         )
 
-                    if best is None or detection["chip_pos"] < best["chip_pos"]:
+                    # Prefer CRC-OK, then earliest chip position (robust ranking)
+                    if best is None:
                         best = detection
+                    elif detection["fcs_ok"] and not best["fcs_ok"]:
+                        best = detection
+                    elif not detection["fcs_ok"] and best["fcs_ok"]:
+                        pass
+                    elif detection["chip_pos"] < best["chip_pos"]:
+                        best = detection
+
+    if best is not None:
+        best_syms = best.pop("_syms")
+        total_sym_count = len(best["frame"]) * 2
+        best["all_symbol_distances"] = [
+            dist for _, dist in best_syms[best["sym_pos"] : best["sym_pos"] + total_sym_count]
+        ]
 
     return best
 
@@ -549,7 +564,13 @@ try:
                             f"align:{detection['chip_align']} ==="
                         )
                         print(f"Phase symbols: {detection['symbols']}")
-                        print(f"Phase distances: {detection['symbol_distances']}")
+                        print(f"Preamble distances: {detection['symbol_distances']}")
+                        if not detection["fcs_ok"] and "all_symbol_distances" in detection:
+                            # Show tail-end symbol distances for CRC-FAIL diagnostics
+                            all_d = detection["all_symbol_distances"]
+                            tail_n = min(16, len(all_d))
+                            print(f"All symbol distances (N={len(all_d)}): {all_d}")
+                            print(f"Tail {tail_n} distances: {all_d[-tail_n:]}")
                         print(f"Frame bytes: {' '.join(f'{b:02X}' for b in detection['frame'])}")
                         if detection["fcs_ok"]:
                             print(f"Payload: {' '.join(f'{b:02X}' for b in detection['payload'])}")
