@@ -15,7 +15,9 @@
       "Bash(python3 python/std_ble/generate_ble_exadv_iq_30_72M.py --help)",
       "Bash(python3 -c \"import sys; sys.path.insert\\(0, 'python/ctc_sim/std_zigbee'\\); sys.path.insert\\(0, 'python/ctc_sim/bluebee'\\); import py_compile; py_compile.compile\\('python/ctc_sim/bluebee/bluebee_rx.py', doraise=True\\); print\\('Syntax OK'\\)\")",
       "Bash(xargs kill -9)",
-      "Bash(kill -9 186511)"
+      "Bash(kill -9 186511)",
+      "Bash(python3 -c \"from gr_zigbee import gr_zigbee; g=gr_zigbee\\(\\); print\\('demod_keep_offset:', g.demod_keep_offset\\); print\\('demod_sps:', g.demod_sps\\)\")",
+      "Bash(python3 -c \"import py_compile; py_compile.compile\\('/home/jida/Downloads/antsdr_standalone_/antsdr_standalone/python/ctc_sim/std_zigbee/zigbee_rx_diag.py', doraise=True\\); print\\('OK'\\)\")"
     ]
   }
 }

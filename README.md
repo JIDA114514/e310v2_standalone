@@ -23,7 +23,3 @@ ad9361_init : AD936x initialization error
 - 通过python脚本实现BlueBee和PatternBee的软件模拟
 - 可通过python脚本控制hackrf和e310实现BLE上下行流程
 - 可通过python脚本实现hackrf和e310的zigbee上下行流程
-
-### NOTE
-
-工程基于ADRV9361,可以支持2R2T,可以通过串口修改本振，采样率，增益，基带信号的频率，幅度等。

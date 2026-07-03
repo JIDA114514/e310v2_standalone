@@ -239,6 +239,16 @@ class gr_zigbee(gr.top_block):
         if hasattr(self, 'phase_keep'):
             self.phase_keep.set_n(self.demod_sps)
 
+    def get_demod_keep_offset(self):
+        return self.demod_keep_offset
+
+    def set_demod_keep_offset(self, demod_keep_offset):
+        self.demod_keep_offset = int(demod_keep_offset) % self.demod_sps
+        if hasattr(self, 'i_keep'):
+            self.i_keep.set_offset(self.demod_keep_offset)
+        if hasattr(self, 'q_keep'):
+            self.q_keep.set_offset(self.demod_keep_offset)
+
     def get_phase_keep_offset(self):
         return self.phase_keep_offset
 
